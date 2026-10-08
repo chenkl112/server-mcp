@@ -204,24 +204,3 @@ userdel -r ops-us
 ```
 
 如之前手动添加过 SSH 登录规则，按实际配置移除 ops-us 并执行 `sshd -t` 后重载 SSH。专用密钥可能被多台服务器共用，删除本机凭据前先检查所有清单条目。
-
-## 发布到 GitHub
-
-```sh
-pnpm verify
-pnpm release:export
-```
-
-导出目录位于 `output/github-ready-*`，仅复制明确列出的源码、测试、示例、文档和 CI，并附 SHA-256 清单。导出前检查固定 Windows 绝对路径、私钥材料及部分令牌形态。`servers.json`、密钥、审计日志、历史记录、备份和生成配置保留本机，Git 忽略它们。检查导出内容后可将该目录作为发布源，或从当前仓库提交公开文件。
-
-```sh
-git status --short
-git add .
-git diff --cached --stat
-# 检查暂存内容后提交,并关联你自己的 GitHub 仓库地址:
-git commit -m "Prepare portable MCP server"
-git remote add origin <YOUR_GITHUB_REPOSITORY_URL>
-git push -u origin main
-```
-
-导出检查不替代人工检查后续新增内容;自定义私有配置请保存在 `output/`、仓库外或 `*.local.*` 文件中。当前 `private: true` 阻止误发布到 npm，不影响上传 GitHub。仓库未预设远程地址、作者身份或许可证;公开分发前请选择适合项目的许可证。
