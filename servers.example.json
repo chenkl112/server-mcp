@@ -1,0 +1,23 @@
+{
+  "_comment": "复制为私有 servers.json;示例地址保留用于文档,必须替换;指纹须独立核对。",
+  "default": "web1",
+  "servers": {
+    "web1": {
+      "host": "192.0.2.10",
+      "port": 22,
+      "user": "ops-us",
+      "key": "${VPS_OPS_KEY}",
+      "fingerprints": [],
+      "connectTimeoutMs": 15000,
+      "hardTimeoutMs": 120000,
+      "maxOutputBytes": 262144
+    },
+    "web2": {
+      "host": "198.51.100.20",
+      "port": 2222,
+      "user": "ops-us",
+      "key": "${VPS_OPS_SECOND_KEY}",
+      "fingerprints": []
+    }
+  }
+}

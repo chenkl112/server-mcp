@@ -1,0 +1,28 @@
+{
+  "name": "dsh-vps-ops-mcp",
+  "version": "0.4.0",
+  "private": true,
+  "description": "自建 VPS 运维 MCP 服务器:主机密钥固定校验 + 密钥认证 + 命令白名单 + 分级写操作",
+  "type": "module",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "smoke": "node smoke-client.js",
+    "print-fingerprint": "node scripts/host-fingerprint.js",
+    "test": "node --test test/*.test.js",
+    "verify": "pnpm test && pnpm smoke",
+    "bootstrap": "node scripts/build-bootstrap.js",
+    "config:mcp": "node scripts/configure-mcp.js",
+    "release:export": "node scripts/export-release.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "ssh2": "^1.17.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  },
+  "packageManager": "pnpm@11.24.0"
+}

@@ -1,0 +1,22 @@
+# 可选 DSH 接入模板;占位符需替换,不能直接启动。
+# 推荐生成当前安装的配置:
+# node scripts/configure-profile.js <profile.yml> --disabled
+# 验收完成后使用 --enable;不预设 DSH 用户目录或 profile 名称。
+- id: mcp-vps-ops
+  name: '@deepseek-ai/dsh-mcp-client'
+  enabled: false
+  config:
+    serverName: vps
+    transport: stdio
+    command: '${NODE_EXECUTABLE}'
+    args:
+      - '${PROJECT_DIR}/src/index.js'
+    env:
+      DSH_VPS_INVENTORY: '${INVENTORY_FILE}'
+      DSH_VPS_HOST_FINGERPRINTS: ''
+      DSH_VPS_ALLOW_TOFU: '0'
+    toolCallTimeoutMs: 620000
+    failOnStartupError: false
+    reconnect:
+      enabled: true
+      maxAttempts: 3
