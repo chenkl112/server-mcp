@@ -14,6 +14,7 @@ import { execFileSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+import { powershellEnv } from './helpers/powershell.js';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(PROJECT, 'deploy.ps1');
@@ -37,7 +38,7 @@ test('PowerShell 语法可解析(用真实解析器,不是正则猜)', { skip: p
     if ($errs -and $errs.Count) { $errs | ForEach-Object { $_.Message }; exit 1 } else { exit 0 }
   `;
   try {
-    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', checker], { stdio: 'pipe' });
+    execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', checker], { stdio: 'pipe', env: powershellEnv() });
   } catch (err) {
     assert.fail(`deploy.ps1 语法错误:\n${err.stdout?.toString() ?? err.message}`);
   }

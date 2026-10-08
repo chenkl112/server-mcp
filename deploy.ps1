@@ -128,7 +128,8 @@ function Die($m) { Write-Host "`n[失败] $m`n" -ForegroundColor Red; exit 1 }
 function Invoke-Keygen {
   param([string[]]$KeygenArgs)
   $start = New-Object System.Diagnostics.ProcessStartInfo
-  $start.FileName = (Get-Command ssh-keygen -CommandType Application).Source
+  # Multiple OpenSSH installations may be present on PATH; select one executable.
+  $start.FileName = (Get-Command ssh-keygen -CommandType Application | Select-Object -First 1).Source
   $quoted = foreach ($arg in $KeygenArgs) { '"' + $arg.Replace('"', '\"') + '"' }
   $start.Arguments = $quoted -join ' '
   $start.UseShellExecute = $false

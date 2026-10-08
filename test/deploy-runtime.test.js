@@ -7,13 +7,14 @@ import { spawnSync } from 'node:child_process';
 import { parse } from 'yaml';
 import { configureProfile, PROJECT } from '../src/profile.js';
 import { PUB_PATH, KEY_PATH } from './helpers/paths.js';
+import { powershellEnv } from './helpers/powershell.js';
 
 const ps = s => `'${s.replaceAll("'", "''")}'`;
 const windows = { skip: process.platform !== 'win32' };
 const raw = readFileSync(join(PROJECT, 'deploy.ps1'), 'utf8');
 const acl = raw.match(/function Lock-Acl[\s\S]*?\r?\n}/)[0];
 
-function deploy({ denyCode = 1, pins = ['SHA256:fixture'], expected = 'SHA256:fixture', groups = 'ops-us', freshKey = false, explicitKey = true, profileFile = true } = {}) {
+function deploy({ denyCode = 1, pins = ['SHA256:fixture'], expected = 'SHA256:fixture', groups = 'ops-us', freshKey = false, explicitKey = true, profileFile = true, duplicateKeygen = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mcp deploy runtime-'));
   mkdirSync(join(dir, 'credentials'));
   const key = join(dir, 'credentials', 'key');
@@ -49,12 +50,20 @@ function deploy({ denyCode = 1, pins = ['SHA256:fixture'], expected = 'SHA256:fi
     }
     $env:VPS_OPS_CRED_DIR = ''
     $env:DSH_VPS_INVENTORY = ''
+    ${duplicateKeygen ? `
+    $extraBin = ${ps(join(dir, 'extra-bin'))}
+    New-Item -ItemType Directory -Path $extraBin | Out-Null
+    $keygen = (Get-Command ssh-keygen -CommandType Application | Select-Object -First 1).Source
+    Copy-Item -LiteralPath $keygen -Destination (Join-Path $extraBin 'ssh-keygen.exe')
+    $env:PATH += ';' + $extraBin
+    if (@(Get-Command ssh-keygen -CommandType Application).Count -lt 2) { throw 'Duplicate executable fixture was not created' }
+    ` : ''}
     & ${ps(join(dir, 'deploy.ps1'))} ${explicitKey ? `-CredDir ${ps(join(dir, 'credentials'))} -KeyName key` : ''} -ExpectedFingerprint ${ps(expected)} ${profileFile ? `-ProfileFile ${ps(join(dir, 'profile.yml'))}` : ''}
     exit $LASTEXITCODE
   `;
   const runner = join(dir, 'runner.ps1');
   writeFileSync(runner, '\uFEFF' + harness);
-  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-File', runner], { encoding: 'utf8', timeout: 20000 });
+  const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-File', runner], { encoding: 'utf8', timeout: 20000, env: powershellEnv() });
   return { dir, result, marker, calls, inv };
 }
 
@@ -91,6 +100,13 @@ test('Windows PowerShell 5.1 能生成无口令密钥,路径含空格也可部�
     assert.ok(existsSync(r.marker));
   } finally { rmSync(r.dir, { recursive: true, force: true }); }
 });
+test('PATH 含多套 OpenSSH 时只选择第一套可执行程序', windows, () => {
+  const r = deploy({ duplicateKeygen: true });
+  try {
+    assert.equal(r.result.status, 0, r.result.stdout + r.result.stderr);
+    assert.ok(existsSync(r.marker));
+  } finally { rmSync(r.dir, { recursive: true, force: true }); }
+});
 test('默认复用清单密钥且仅生成通用配置,丢失已有密钥时中止', windows, () => {
   const r = deploy({ explicitKey: false, profileFile: false });
   try {
@@ -120,7 +136,7 @@ test('setup-local 参数以名称正确转发,包含 KeyName 与开关', windows
   try {
     copyFileSync(join(PROJECT, 'setup-local.ps1'), join(dir, 'setup-local.ps1'));
     writeFileSync(join(dir, 'deploy.ps1'), `param($TargetHost,$Name,$KeyName,$CredDir,$Port,$ExpectedFingerprint,[switch]$BootstrapOnly,[switch]$Force)\n$PSBoundParameters | ConvertTo-Json | Set-Content -LiteralPath ${ps(join(dir, 'out.json'))}\nexit 0\n`);
-    const r = spawnSync('powershell', ['-NoProfile', '-File', join(dir, 'setup-local.ps1'), '-TargetHost', '192.0.2.9', '-Name', 'web1', '-KeyName', 'unique', '-Directory', dir, '-Port', '2222', '-BootstrapOnly', '-Force'], { encoding: 'utf8' });
+    const r = spawnSync('powershell', ['-NoProfile', '-File', join(dir, 'setup-local.ps1'), '-TargetHost', '192.0.2.9', '-Name', 'web1', '-KeyName', 'unique', '-Directory', dir, '-Port', '2222', '-BootstrapOnly', '-Force'], { encoding: 'utf8', env: powershellEnv() });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     const result = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8').replace(/^\uFEFF/, ''));
     assert.equal(result.TargetHost, '192.0.2.9');
@@ -129,7 +145,7 @@ test('setup-local 参数以名称正确转发,包含 KeyName 与开关', windows
     assert.equal(result.Port, 2222);
     assert.ok(result.BootstrapOnly.IsPresent ?? result.BootstrapOnly);
     assert.ok(result.Force.IsPresent ?? result.Force);
-    const implicit = spawnSync('powershell', ['-NoProfile', '-File', join(dir, 'setup-local.ps1'), '-TargetHost', '192.0.2.9'], { encoding: 'utf8' });
+    const implicit = spawnSync('powershell', ['-NoProfile', '-File', join(dir, 'setup-local.ps1'), '-TargetHost', '192.0.2.9'], { encoding: 'utf8', env: powershellEnv() });
     assert.equal(implicit.status, 0, implicit.stdout + implicit.stderr);
     const forwarded = JSON.parse(readFileSync(join(dir, 'out.json'), 'utf8').replace(/^\uFEFF/, ''));
     assert.equal(Object.hasOwn(forwarded, 'KeyName'), false);
@@ -141,7 +157,7 @@ test('凭据 ACL 重建会移除显式 Everyone 和任意第三方 ACE', windows
   writeFileSync(file, 'fixture');
   try {
     const script = `${acl}\n$a=Get-Acl -LiteralPath ${ps(file)}\n$a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('Everyone','Read','Allow')))\nSet-Acl -LiteralPath ${ps(file)} -AclObject $a\nLock-Acl ${ps(file)} -StripEveryone\n$a=Get-Acl -LiteralPath ${ps(file)}\nif (-not $a.AreAccessRulesProtected -or $a.Access.Count -ne 3) {exit 1}\nif ($a.Access | Where-Object {$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value -eq 'S-1-1-0'}) {exit 2}\n`;
-    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' });
+    const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', env: powershellEnv() });
     assert.equal(r.status, 0, r.stdout + r.stderr);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
