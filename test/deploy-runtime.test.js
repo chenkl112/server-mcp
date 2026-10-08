@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, copyFileSync, existsSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { parse } from 'yaml';
@@ -23,7 +23,8 @@ test('通过 powershell -File 启动时默认清单相对脚本目录解析', wi
     delete env.DSH_VPS_INVENTORY;
     const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-File', script], { encoding: 'utf8', env });
     assert.equal(result.status, 1, result.stdout + result.stderr);
-    assert.ok(result.stdout.includes(join(dir, 'servers.json')), result.stdout + result.stderr);
+    // PowerShell can expand Windows short names in the temporary directory path.
+    assert.ok(result.stdout.includes(join(basename(dir), 'servers.json')), result.stdout + result.stderr);
     assert.equal(result.stderr.includes('ParameterArgumentValidationErrorEmptyString'), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
