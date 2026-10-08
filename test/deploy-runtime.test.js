@@ -14,6 +14,20 @@ const windows = { skip: process.platform !== 'win32' };
 const raw = readFileSync(join(PROJECT, 'deploy.ps1'), 'utf8');
 const acl = raw.match(/function Lock-Acl[\s\S]*?\r?\n}/)[0];
 
+test('通过 powershell -File 启动时默认清单相对脚本目录解析', windows, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mcp-cli-'));
+  try {
+    const script = join(dir, 'deploy.ps1');
+    writeFileSync(script, '\uFEFF' + raw.replace(/^\uFEFF/, ''));
+    const env = powershellEnv();
+    delete env.DSH_VPS_INVENTORY;
+    const result = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-File', script], { encoding: 'utf8', env });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stdout.includes(join(dir, 'servers.json')), result.stdout + result.stderr);
+    assert.equal(result.stderr.includes('ParameterArgumentValidationErrorEmptyString'), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 function deploy({ denyCode = 1, pins = ['SHA256:fixture'], expected = 'SHA256:fixture', groups = 'ops-us', freshKey = false, explicitKey = true, profileFile = true, duplicateKeygen = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mcp deploy runtime-'));
   mkdirSync(join(dir, 'credentials'));

@@ -50,11 +50,14 @@ param(
   [switch]$NoSudo,
   [switch]$UpdateServer,
   [string]$ProfileFile,
-  [string]$InventoryPath = $(if ($env:DSH_VPS_INVENTORY) { $env:DSH_VPS_INVENTORY } else { Join-Path $PSScriptRoot 'servers.json' })
+  [string]$InventoryPath
 )
 
 $ErrorActionPreference = 'Stop'
 $ProjectDir = $PSScriptRoot
+if (-not $InventoryPath) {
+  $InventoryPath = if ($env:DSH_VPS_INVENTORY) { $env:DSH_VPS_INVENTORY } else { Join-Path $ProjectDir 'servers.json' }
+}
 # 此自动部署入口使用 Windows ACL;其他平台按 README 手工接入。
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'deploy.ps1 需要 Windows;其他平台请使用 README 的手工接入流程' }
 $InventoryPath = [IO.Path]::GetFullPath($InventoryPath)
