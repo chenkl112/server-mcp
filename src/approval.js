@@ -121,7 +121,7 @@ export function createApprovalGate(opts = {}) {
   let listenPromise = null;
   let invalidHits = 0;
   let closed = false;
-  const counters = { requested: 0, allowed: 0, denied: 0, timedOut: 0, autoAllowed: 0 };
+  const counters = { requested: 0, allowed: 0, denied: 0, timedOut: 0, autoAllowed: 0, pageLoads: 0 };
 
   function pendingRecord() {
     for (const r of records.values()) if (r.status === 'pending') return r;
@@ -224,6 +224,10 @@ export function createApprovalGate(opts = {}) {
     const action = `/a/${token}`;
 
     if (req.method === 'GET' || req.method === 'HEAD') {
+      // 记录"页面确实被打开过"。审批结果本身仍以 POST 为准,但这个计数能让审计
+      // 区分"人看过页面才点的允许"和"某个脚本直接 POST 了 allow"。
+      record.pageLoads += 1;
+      counters.pageLoads += 1;
       return send(
         res,
         200,
@@ -363,6 +367,7 @@ export function createApprovalGate(opts = {}) {
           approval: {
             id: record.id,
             source: record.source ?? 'local-ui',
+            pageLoaded: (record.pageLoads ?? 0) > 0,
             decidedAt: record.decidedAt ? record.decidedAt.toISOString() : null,
             waitedMs: record.decidedAt ? record.decidedAt - record.createdAt : null,
           },
@@ -402,6 +407,9 @@ export function createApprovalGate(opts = {}) {
         id: record.id,
         tool: record.job.tool,
         source: record.source ?? null,
+        // 审批页是否真的被打开过。allow 却 pageLoaded=false 说明有人直接 POST 了
+        // 端点而没有经过页面 —— 审计里应当能看出来。
+        pageLoaded: (record.pageLoads ?? 0) > 0,
         requestedAt: record.createdAt.toISOString(),
         decidedAt: record.decidedAt ? record.decidedAt.toISOString() : null,
         waitedMs: record.decidedAt ? record.decidedAt - record.createdAt : null,
@@ -540,6 +548,7 @@ export function createApprovalGate(opts = {}) {
       result: null,
       executed: false,
       executing: false,
+      pageLoads: 0,
       resolve: settleResolved,
       settled,
     };
@@ -585,6 +594,7 @@ export function createApprovalGate(opts = {}) {
       waitMs: settings.waitMs,
       port,
       pending: [...records.values()].filter((r) => r.status === 'pending').length,
+      pageLoads: counters.pageLoads,
       counters: { ...counters },
     };
   }

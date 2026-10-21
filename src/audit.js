@@ -91,6 +91,8 @@ export function recordApprovedWrite({
           approval: {
             id: approval.id ?? null,
             source: approval.source ?? null,
+            // allow 却 pageLoaded=false → 有人绕开页面直接 POST 了审批端点
+            pageLoaded: approval.pageLoaded ?? null,
             decidedAt: approval.decidedAt ?? null,
             waitedMs: approval.waitedMs ?? null,
           },

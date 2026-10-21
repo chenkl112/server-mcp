@@ -66,3 +66,9 @@ SSH 集成测试使用本机临时服务，覆盖实际握手、主机指纹、�
 - **`--full-sudo` 取消服务端边界。** 该模式写入 `ops-us ALL=(ALL) NOPASSWD: ALL`,此后能否做某事只取决于审批页有没有人点"允许"。默认 `readonly` 模式保持不变:只授权 root 所有的 `mcp-readonly` 包装程序。`sudo_exec` 在两种模式下都硬拦磁盘/分区破坏、裸写块设备、删根、系统授权根文件。
 - **新增测试。** `test/approval.test.js` 真起 HTTP 服务验证"没有人的点击就不执行"(拒绝/超时/伪造令牌/并发/一次性);`test/risk.test.js` 固定六级分类与确认强度;`test/sudo-guard.test.js` 固定 sudo/删除/下载三条通道的硬拦边界。
 - **发布闸门修正。** `test/sudo-guard.test.js` 里内嵌凭据的 URL 样例改为运行时拼接,避免发布导出被 `URL credentials` 规则拒绝。
+### 0.5.0 补充:Codex 接入与页面加载审计
+
+- **Codex CLI 用 TOML,新增 `src/codex-config.js` + `scripts/configure-codex.js`** 做幂等合并:只改 `[mcp_servers.<name>]` 与 `.env` 两张表,保留其他表、注释与未知键;遇到内联表或跨行数组直接拒绝,不猜测重写用户的主配置。
+- **审批记录新增 `pageLoaded`。** 审批页被 GET 过才为 true。`allow` 却 `pageLoaded=false` 说明有人绕过页面直接 POST 了审批端点 —— 闸门无法从 POST 本身区分人和脚本,所以不阻断,但审计里必须能看出来。
+- **新增 `scripts/verify-approval-page.js`。** 闸门是 fail-closed 的:如果默认浏览器打不开(组策略、文件关联、安全软件),所有写操作都会返回 denied 且原因难查。该脚本只起一个本地演示页并报告页面是否真的被加载,用于接入前的桌面验证。
+- **已在 Codex CLI 0.163.0 实测**:调用 `policy_info` 返回 `approval.mode: prompt`、`writeChannels: 4`;客户端自身的 `approval = never` 不影响闸门(MCP 进程内执行)。

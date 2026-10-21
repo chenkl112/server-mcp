@@ -83,6 +83,28 @@ test('用户点"拒绝"时,命令一个字都不会执行', async () => {
   assert.equal(outcome.status, 'denied');
   assert.equal(calls(), 0, '拒绝后绝不能执行');
   assert.equal(outcome.approval.source, 'local-ui');
+  assert.equal(outcome.approval.pageLoaded, true, '这次 GET 过页面,应记为已加载');
+
+  gate.close();
+});
+
+test('没打开过页面就直接 POST 批准:能执行,但审计里留下 pageLoaded=false', async () => {
+  // 这不是"正常用户"的路径 —— 真实用户必须先看到页面才有点的按钮。
+  // 闸门无法从 POST 本身区分"人点的"与"脚本 POST 的",所以不阻断,
+  // 但把"页面从未被加载"记进审批记录,让审计能看出这种形态。
+  const { gate, box } = newGate();
+  const { job, calls } = makeJob('systemctl restart docker');
+  const pending = gate.request(job);
+
+  const url = await waitFor(() => box.url);
+  const res = await decide(url, { decision: 'allow', ack: 'on' }); // 注意:全程没有 GET
+  assert.equal(res.status, 200);
+
+  const outcome = await pending;
+  assert.equal(outcome.status, 'executed');
+  assert.equal(calls(), 1);
+  assert.equal(outcome.approval.pageLoaded, false, '没有加载页面就必须在记录里体现');
+  assert.equal(gate.stats().pageLoads, 0);
 
   gate.close();
 });

@@ -16,6 +16,8 @@
     "verify": "pnpm test && pnpm smoke",
     "bootstrap": "node scripts/build-bootstrap.js",
     "config:mcp": "node scripts/configure-mcp.js",
+    "config:codex": "node scripts/configure-codex.js",
+    "verify:approval": "node scripts/verify-approval-page.js",
     "release:export": "node scripts/export-release.js"
   },
   "dependencies": {

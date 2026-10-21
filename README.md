@@ -115,6 +115,50 @@ node scripts/verify-onboarding.js web1
 | `DSH_VPS_AUDIT_LOG` | 覆盖审计 JSONL 路径 |
 | `DSH_VPS_HOST_FINGERPRINTS` | 兼容的全局兜底指纹，建议留空 |
 
+### Codex CLI 接入
+
+Codex 用 TOML（`~/.codex/config.toml`），所以有独立的生成器（`configure-mcp.js` 只出 JSON）：
+
+```powershell
+node scripts/configure-codex.js                  # 只看会写成什么，不落盘
+node scripts/configure-codex.js --write          # 合并写回（自动备份原文件）
+node scripts/configure-codex.js --config <路径>  # 指定配置文件（默认 $CODEX_HOME 或 ~/.codex）
+```
+
+合并规则（全部有测试守着）：
+
+| 规则 | 说明 |
+|---|---|
+| 只动两张表 | `[mcp_servers.vps]` 与 `[mcp_servers.vps.env]`，其他表与注释逐字节保留 |
+| 保留扩展键 | 表里它不认识的键（例如你加的 `cwd`、额外环境变量）原样留着 |
+| 幂等 | 同样的配置跑两次，第二次报"已经是目标状态" |
+| 看不懂就拒绝 | 内联表 `mcp_servers.vps = {…}`、跨行数组 → 报错让你手工改，不猜 |
+
+生成的片段长这样（注意 `tool_timeout_sec` 必须大于审批等待的 45 秒）：
+
+```toml
+[mcp_servers.vps]
+command = "…\\node.exe"
+args = ["…\\server-mcp\\src\\index.js"]
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 620
+
+[mcp_servers.vps.env]
+DSH_VPS_INVENTORY = "…\\server-mcp\\servers.json"
+DSH_VPS_ALLOW_TOFU = "0"
+```
+
+**已经验证过**：Codex CLI 0.163.0 调用本 MCP 的 `policy_info` 返回 `approval.mode: prompt`、`writeChannels: 4`，说明 0.5.0 的审批闸门在 Codex 下同样生效。Codex 自己的 `approval = never` 不影响这里 —— 闸门在 MCP 进程内，是否弹窗与客户端策略无关。
+
+### 验证审批弹窗能不能打开
+
+```powershell
+node scripts/verify-approval-page.js
+```
+
+它只在本地起一个演示页面（不连接任何服务器、不执行任何命令），然后看浏览器是否真的打开了它。**失败就意味着所有写操作都会返回 denied**，因为闸门是 fail-closed 的。排查项：默认浏览器关联、`rundll32 url.dll,FileProtocolHandler` 是否被组策略/安全软件拦截。
+
 ### 通用 MCP 客户端
 
 ```sh
@@ -244,7 +288,7 @@ SSH 的 stdout 和 stderr **各自**按 `maxOutputBytes` 限制，支持跨 chun
 默认审计文件为 `audit/approved-writes.jsonl`，支持用环境变量覆盖。记录命令、目标、原因、哈希、**工具名、是否 root、风险等级与类别、审批来源与等待时长**、结果及输出字节数，不记录 stdout/stderr 内容。批准执行前必须先写入 `authorized` 记录，失败时不发送命令；执行后追加结果。命令文本超过 2000 字符会截断，完整 SHA-256 保留。只读任意命令及被拒绝尝试也会留痕；内置状态快照不逐条记录审计。请按需管理日志轮转与保留时间。
 
 ```powershell
-pnpm test       # 128 个测试:临时密钥、本地 SSH 服务、审批闸门真发 HTTP、隔离的 PowerShell 部署及 Bash 包装程序
+pnpm test       # 139 个测试:临时密钥、本地 SSH 服务、审批闸门真发 HTTP、Codex TOML 合并、隔离的 PowerShell 部署及 Bash 包装程序
 pnpm smoke      # stdio MCP 握手、14 个工具、拒绝策略和审计；只连接本机测试地址
 pnpm audit --prod
 ```
