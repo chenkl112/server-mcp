@@ -134,6 +134,15 @@ node scripts/configure-codex.js --config <路径>  # 指定配置文件（默认
 | 幂等 | 同样的配置跑两次，第二次报"已经是目标状态" |
 | 看不懂就拒绝 | 内联表 `mcp_servers.vps = {…}`、跨行数组 → 报错让你手工改，不猜 |
 
+**必须写 `default_tools_approval_mode = "approve"`。** Codex 自己也有 MCP 工具审批层，默认 `auto` 会按工具的 `destructiveHint` 判��，把本项目的写工具拦在**调用服务端之前**：
+
+```
+mcp: vps/sudo_exec (failed)
+MCP tool call requires approval, but approval policy is never
+```
+
+这时请求根本没发出去，用户会误以为服务端坏了。本项目的审批是自己在 MCP 进程内做的（浏览器一次性页面），所以正确接法是让 Codex 放行、由这一层问人。合法值：`auto` / `prompt` / `writes` / `approve`（由 Codex 的 serde 校验给出）。
+
 生成的片段长这样（注意 `tool_timeout_sec` 必须大于审批等待的 45 秒）：
 
 ```toml
@@ -141,6 +150,7 @@ node scripts/configure-codex.js --config <路径>  # 指定配置文件（默认
 command = "…\\node.exe"
 args = ["…\\server-mcp\\src\\index.js"]
 enabled = true
+default_tools_approval_mode = "approve"
 startup_timeout_sec = 20
 tool_timeout_sec = 620
 
@@ -149,7 +159,17 @@ DSH_VPS_INVENTORY = "…\\server-mcp\\servers.json"
 DSH_VPS_ALLOW_TOFU = "0"
 ```
 
-**已经验证过**：Codex CLI 0.163.0 调用本 MCP 的 `policy_info` 返回 `approval.mode: prompt`、`writeChannels: 4`，说明 0.5.0 的审批闸门在 Codex 下同样生效。Codex 自己的 `approval = never` 不影响这里 —— 闸门在 MCP 进程内，是否弹窗与客户端策略无关。
+**已经验证过**（Codex CLI 0.163.0）：
+
+| 验证项 | 结果 |
+|---|---|
+| 只要能启动并列出工具 | ✅ `codex mcp list` 显示 `vps` enabled |
+| 只读工具调用 | ✅ `policy_info` 返回 `approval.mode: prompt`、`writeChannels: 4` |
+| 写工具是否被 Codex 自己拦 | ✅ 默认 `auto` 会被拦（报上面那条错误）；`approve` 后放行 |
+| 放行后是否由本服务端把关 | ✅ 用 `DSH_VPS_APPROVAL_MODE=deny` 覆盖时返回 `status: denied` |
+| 完整链路 | ✅ Codex 调用 `sudo_exec` → 浏览器弹审批页 → 点"允许" → 返回 `status: executed`；审计留下 `outcome=authorized`/`executed`、`approval.source=local-ui`、`pageLoaded=true` |
+
+Codex 自己的 `approval` 策略与这里的闸门是**两层**：Codex 那层决定"这个工具调用要不要让客户端插手"，本项目的闸门决定"这条命令要不要人点"。两层都开着会双重打扰，所以配 `approve` 把判断权交给本闸门。
 
 ### 验证审批弹窗能不能打开
 

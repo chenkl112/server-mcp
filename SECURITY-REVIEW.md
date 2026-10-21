@@ -72,3 +72,10 @@ SSH 集成测试使用本机临时服务，覆盖实际握手、主机指纹、�
 - **审批记录新增 `pageLoaded`。** 审批页被 GET 过才为 true。`allow` 却 `pageLoaded=false` 说明有人绕过页面直接 POST 了审批端点 —— 闸门无法从 POST 本身区分人和脚本,所以不阻断,但审计里必须能看出来。
 - **新增 `scripts/verify-approval-page.js`。** 闸门是 fail-closed 的:如果默认浏览器打不开(组策略、文件关联、安全软件),所有写操作都会返回 denied 且原因难查。该脚本只起一个本地演示页并报告页面是否真的被加载,用于接入前的桌面验证。
 - **已在 Codex CLI 0.163.0 实测**:调用 `policy_info` 返回 `approval.mode: prompt`、`writeChannels: 4`;客户端自身的 `approval = never` 不影响闸门(MCP 进程内执行)。
+### 0.5.0 补充:Codex 自己的 MCP 审批层会挡住写工具
+
+- **现象**:Codex 0.163.0 的会话策略为 `approval: never` 时,调用本服务的 `sudo_exec` 在**到达服务端之前**就被拦下,报 `MCP tool call requires approval, but approval policy is never`。用户看到的是"工具 failed",实际请求根本没发出去。
+- **机制**:Codex 有一层独立的 MCP 工具审批,按工具的 `destructiveHint` 判定;`[mcp_servers.<name>]` 支持 `default_tools_approval_mode`(合法值由 serde 校验给出:`auto` / `prompt` / `writes` / `approve`)。
+- **处理**:本项目在 MCP 进程内自己问人,所以生成器固定写 `default_tools_approval_mode = "approve"`,让 Codex 放行、由本闸门决定。两层同时开启只会变成双重弹窗。
+- **实测**:`approve` 后同一调用抵达服务端;用 `DSH_VPS_APPROVAL_MODE=deny` 覆盖时返回 `status: denied`;完整链路(Codex → 弹窗 → 点允许 → `status: executed`)已在 Codex CLI 0.163.0 上跑通,审计记录 `approval.source=local-ui`、`pageLoaded=true`。
+- **风险提示**:若同时把 `DSH_VPS_APPROVAL_MODE` 设成 `allow`,`approve` 会让写操作在**没有任何审批**的情况下执行。这两个开关不要同时打开。

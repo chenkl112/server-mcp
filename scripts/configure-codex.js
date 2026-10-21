@@ -11,6 +11,11 @@
  *   node scripts/configure-codex.js --write          # 合并写回(自动备份)
  *   node scripts/configure-codex.js --write --force  # 已存在且不一致时也覆盖
  *   node scripts/configure-codex.js --config <path>  # 指定配置文件
+ *   node scripts/configure-codex.js --tools-approval-mode <auto|prompt|writes|approve>
+ *
+ * 关于 default_tools_approval_mode:必须让 Codex 放行本服务器的工具(默认 approve),
+ * 否则 Codex 会按 destructiveHint 先拦掉写工具,请求根本到不了本服务端。
+ * 合法值由 Codex 自己的 serde 校验给出。
  *
  * 退出码: 0 已一致或写入成功; 2 需要人工处理(存在冲突)
  */
@@ -44,6 +49,7 @@ const options = {
   env: { DSH_VPS_INVENTORY: INVENTORY, DSH_VPS_ALLOW_TOFU: '0' },
   toolTimeoutSec: Number(value('--tool-timeout-sec', 620)),
   startupTimeoutSec: 20,
+  toolsApprovalMode: value('--tools-approval-mode', 'approve'),
 };
 
 console.log('=== Codex MCP 配置 ===\n');

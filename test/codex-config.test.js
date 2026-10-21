@@ -124,3 +124,17 @@ test('片段输出可用于手工粘贴,且不含审批模式覆盖', () => {
   assert.equal(/DSH_VPS_APPROVAL_MODE/.test(snippet.replace(/^#.*$/gm, '')), false);
   assert.match(snippet, /tool_timeout_sec = 620/);
 });
+
+test('必须让 Codex 放行本服务器的工具(否则写工具根本发不出去)', () => {
+  const { text } = upsertCodexMcp('', BASE);
+  // Codex 默认 auto 会按 destructiveHint 拦掉写工具,报
+  // "MCP tool call requires approval, but approval policy is never"
+  assert.match(text, /^default_tools_approval_mode = "approve"$/m);
+
+  const snippet = renderCodexSnippet(BASE);
+  assert.match(snippet, /^default_tools_approval_mode = "approve"$/m);
+
+  // 可覆盖成其它合法值
+  const custom = renderCodexSnippet({ ...BASE, toolsApprovalMode: 'writes' });
+  assert.match(custom, /^default_tools_approval_mode = "writes"$/m);
+});

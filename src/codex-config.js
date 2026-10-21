@@ -15,8 +15,30 @@
  */
 
 /** 由本工具托管的键;其余键原样保留。 */
-const MANAGED_KEYS = ['command', 'args', 'enabled', 'startup_timeout_sec', 'tool_timeout_sec'];
+const MANAGED_KEYS = [
+  'command',
+  'args',
+  'enabled',
+  'startup_timeout_sec',
+  'tool_timeout_sec',
+  'default_tools_approval_mode',
+];
 const MANAGED_ENV = ['DSH_VPS_INVENTORY', 'DSH_VPS_ALLOW_TOFU'];
+
+/**
+ * 为什么必须显式写 `default_tools_approval_mode = "approve"`:
+ *
+ * Codex 自己也有 MCP 工具审批层,按工具的 destructiveHint 判定。默认值 `auto`
+ * 下,本项目的写工具(sudo_exec / delete_path / fetch_url / ssh_exec_approved)
+ * 会被 Codex 拦在**调用服务端之前**,报:
+ *   `MCP tool call requires approval, but approval policy is never`
+ * 用户会以为"服务器坏了",其实请求根本没发出去。
+ *
+ * 本项目的审批是自己在 MCP 进程内做的(浏览器一次性页面),所以正确的接法是
+ * 让 Codex 放行、由我们这一层问人 —— 否则要么双重弹窗,要么被静默拒绝。
+ * 合法值(auto / prompt / writes / approve)由 Codex 的 serde 校验给出。
+ */
+const DEFAULT_TOOLS_APPROVAL_MODE = 'approve';
 
 const HEADER = /^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/;
 const KEY_LINE = /^\s*([A-Za-z0-9_"'.-]+)\s*=\s*(.+)$/;
@@ -109,6 +131,7 @@ export function upsertCodexMcp(source, options) {
     env = {},
     toolTimeoutSec = 620,
     startupTimeoutSec = 20,
+    toolsApprovalMode = DEFAULT_TOOLS_APPROVAL_MODE,
   } = options;
 
   if (!command) throw new Error('缺少 command');
@@ -139,6 +162,7 @@ export function upsertCodexMcp(source, options) {
     ['command', tomlString(command)],
     ['args', tomlStringArray(args)],
     ['enabled', 'true'],
+    ['default_tools_approval_mode', tomlString(toolsApprovalMode)],
     ['startup_timeout_sec', String(startupTimeoutSec)],
     ['tool_timeout_sec', String(toolTimeoutSec)],
   ]);
@@ -205,12 +229,24 @@ export function upsertCodexMcp(source, options) {
 
 /** 生成给用户看的 TOML 片段(不落盘时用)。 */
 export function renderCodexSnippet(options) {
-  const { name = 'vps', command, args, env = {}, toolTimeoutSec = 620, startupTimeoutSec = 20 } = options;
+  const {
+    name = 'vps',
+    command,
+    args,
+    env = {},
+    toolTimeoutSec = 620,
+    startupTimeoutSec = 20,
+    toolsApprovalMode = DEFAULT_TOOLS_APPROVAL_MODE,
+  } = options;
   return [
     `[mcp_servers.${name}]`,
     `command = ${tomlString(command)}`,
     `args = ${tomlStringArray(args)}`,
     'enabled = true',
+    `# 让 Codex 放行本服务器的工具:人工审批由 MCP 进程内的浏览器页面负责。`,
+    `# 用默认值 auto 时,Codex 会先按 destructiveHint 拦掉写工具,报`,
+    `# "MCP tool call requires approval, but approval policy is never"。`,
+    `default_tools_approval_mode = ${tomlString(toolsApprovalMode)}`,
     `startup_timeout_sec = ${startupTimeoutSec}`,
     `# 必须大于审批等待时长(默认 45 秒),否则人工点"允许"的过程中会被客户端掐断`,
     `tool_timeout_sec = ${toolTimeoutSec}`,
