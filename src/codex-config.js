@@ -254,7 +254,8 @@ export function renderCodexSnippet(options) {
     `[mcp_servers.${name}.env]`,
     `DSH_VPS_INVENTORY = ${tomlString(env.DSH_VPS_INVENTORY ?? '')}`,
     `DSH_VPS_ALLOW_TOFU = ${tomlString(env.DSH_VPS_ALLOW_TOFU ?? '0')}`,
-    `# 不要设 DSH_VPS_APPROVAL_MODE:默认 prompt 才是"每次必问"`,
+    `# 不要设 DSH_VPS_APPROVAL_MODE:默认 chat(对话确认)才是"每次必问";`,
+    `# 想要浏览器人工页面就设成 prompt。`,
     '',
   ].join('\n');
 }

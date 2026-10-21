@@ -79,3 +79,14 @@ SSH 集成测试使用本机临时服务，覆盖实际握手、主机指纹、�
 - **处理**:本项目在 MCP 进程内自己问人,所以生成器固定写 `default_tools_approval_mode = "approve"`,让 Codex 放行、由本闸门决定。两层同时开启只会变成双重弹窗。
 - **实测**:`approve` 后同一调用抵达服务端;用 `DSH_VPS_APPROVAL_MODE=deny` 覆盖时返回 `status: denied`;完整链路(Codex → 弹窗 → 点允许 → `status: executed`)已在 Codex CLI 0.163.0 上跑通,审计记录 `approval.source=local-ui`、`pageLoaded=true`。
 - **风险提示**:若同时把 `DSH_VPS_APPROVAL_MODE` 设成 `allow`,`approve` 会让写操作在**没有任何审批**的情况下执行。这两个开关不要同时打开。
+### 0.5.0 补充:默认改为对话确认(chat),浏览器页面退为可选
+
+- **动机**:浏览器弹窗在桌面端可用,但在无图形界面、远程会话或只想在对话里确认时是障碍。默认模式因此改为 `chat`。
+- **两阶段**:写工具第一次调用**绝不执行**,只返回 `awaiting-user` + `approvalId` + `promptForUser`(命令原文、风险等级、逐条风险点、回滚建议)。模型必须把确认稿发给用户并结束本轮;用户回复后调用 `approval_resume(decision, userReply)` 才执行。
+- **防自动批准的三道闸**:
+  1. `userReply` 必填 —— 缺了返回 `needs-user-reply`,不执行;该原话写入审计 `approval.userReply`;
+  2. `minDelayMs`(默认 8000ms)—— 距发起过短的批准返回 `too-fast`,说明模型没等用户;
+  3. 单待审批 + 30 分钟 TTL —— 超时按拒绝关闭。
+- **能力差异必须承认**:`chat` 模式无法证明"用户真的回复过",它验证的是"模型带来了原话"与"时间上说得通"。需要更强保证时用 `DSH_VPS_APPROVAL_MODE=prompt`,那条路径是浏览器一次性令牌,模型无法伪造。README 与 `policy_info` 均标注该差异。
+- **审计**:`approval.source` 明确区分 `local-ui`(浏览器)与 `chat`(对话);`pageLoaded` 仅在浏览器模式有意义。
+- **测试**:`test/approval-chat.test.js` 固定"第一次不执行 / 缺 reply 拒绝 / too-fast 拒绝 / 拒绝不执行 / 超时关闭 / 单待审批"六类行为;原 `approval.test.js` 继续守浏览器模式。

@@ -124,6 +124,39 @@ function respondOutcome(outcome, { server, command, displayCommand, sudo, reason
     };
   }
 
+  // 对话模式:等待用户在聊天里回话。这一条既不是错误,也不是"已执行"。
+  if (outcome.status === 'awaiting-user') {
+    return {
+      isError: false,
+      payload: {
+        ...base,
+        executed: false,
+        expiresAt: outcome.expiresAt ?? null,
+        promptForUser: outcome.promptForUser ?? null,
+        nextStep:
+          '把 promptForUser 原样发给用户,然后**结束本轮**等他回复。' +
+          '用户明确同意后:approval_resume({approvalId, decision:"allow", userReply:"<用户原话>"});' +
+          '用户拒绝:approval_resume({approvalId, decision:"deny"})。' +
+          '不要替用户决定,也不要编造他的回复。',
+      },
+    };
+  }
+
+  if (outcome.status === 'too-fast' || outcome.status === 'needs-user-reply' || outcome.status === 'bad-decision') {
+    return {
+      isError: true,
+      payload: {
+        ...base,
+        executed: false,
+        blocked: true,
+        reason: outcome.reason,
+        ...(outcome.elapsedMs != null
+          ? { elapsedMs: outcome.elapsedMs, minDelayMs: outcome.minDelayMs, remainingMs: outcome.remainingMs ?? null }
+          : {}),
+      },
+    };
+  }
+
   if (outcome.status === 'executed') {
     const r = outcome.result ?? {};
     if (r.ok === false) {
@@ -284,10 +317,11 @@ const server = new McpServer(
       '读状态优先用 status_snapshot(可加 allServers 一次采集全部);' +
       'read_only_command 只能执行白名单内的只读命令。' +
       '需要 root 权限时用 sudo_exec,删除用 delete_path,从网上下载用 fetch_url —— ' +
-      '这三条以及 ssh_exec_approved 都会**在用户浏览器里弹出审批页面**,由用户在页面上点"允许"后才会执行:' +
-      '你无法代替用户批准,调用会阻塞等待(默认 45 秒),超时后返回 pending,用 approval_resume 继续等待。' +
-      '调用前仍应把命令原文、目的、影响面与风险告诉用户;调用后必须如实转述 risk 字段与实际结果,' +
-      '不能把 pending 或 denied 说成已执行。不确定某条命令有多危险时,先调 review_command 只做审查不执行。',
+      '这四条(含 ssh_exec_approved)都是**两阶段**的:第一次调用不会执行,只返回 awaiting-user 与一份 promptForUser;' +
+      '你要把 promptForUser 原样发给用户,然后**结束本轮**等他回复;' +
+      '用户明确同意后,再调用 approval_resume(approvalId, decision:"allow", userReply:"<用户原话>") 才真正执行。' +
+      '不要替用户决定、不要编造 userReply、也不要把 awaiting-user 说成已执行。' +
+      '不确定某条命令有多危险时,先调 review_command 只做审查不执行。',
   },
 );
 
@@ -620,10 +654,11 @@ server.registerTool(
 server.registerTool(
   'ssh_exec_approved',
   {
-    title: '执行写操作(必须用户批准)',
+    title: '执行写操作(必须先拿到用户回复)',
     description:
-      '对指定服务器执行非只读命令。会**在用户浏览器里弹出审批页面**,由用户点击"允许"后才执行 —— ' +
-      'approvedByUser 只是"我已经在对话里把这事说过"的声明,真正生效的是那次点击。' +
+      '对指定服务器执行非只读命令。**第一次调用不会执行**,只返回 awaiting-user 与 promptForUser;' +
+      '把 promptForUser 发给用户并结束本轮,用户同意后用 approval_resume 才真正执行。' +
+      'approvedByUser 只是"我已经把这事告诉用户了"的声明,真正生效的是用户那句回复。' +
       '即使批准,仍禁止删数据卷、改防火墙、改账户、改计划任务等操作;需要 root 请改用 sudo_exec。',
     inputSchema: {
       command: z.string().min(1).max(8192).describe('要执行的命令原文'),
@@ -739,7 +774,7 @@ server.registerTool(
       risk: riskPayload(risk),
       whichChannel: asSudo ? 'sudo_exec' : 'ssh_exec_approved',
       nextStep: verdict.ok
-        ? `若确要执行,调用 ${asSudo ? 'sudo_exec' : 'ssh_exec_approved'} —— 它会在用户浏览器里弹出审批页面,由用户决定。`
+        ? `若确要执行,调用 ${asSudo ? 'sudo_exec' : 'ssh_exec_approved'} —— 它会返回待确认稿,由用户决定。`
         : '这条命令连审批机会都没有(命中硬性禁止)。请换一个不触碰受保护路径/凭据的方案。',
     });
   },
@@ -751,10 +786,11 @@ server.registerTool(
   {
     title: '以 root 执行命令(每次都必须人工审批)',
     description:
-      '用 `sudo -n` 以 root 身份执行一条命令。**每次调用都会在用户浏览器里打开审批页面**,' +
-      '页面会列出命令原文、风险等级、逐条风险点与回滚建议;用户点"允许"后才执行,' +
-      '拒绝、关窗或超时(5 分钟)都按拒绝处理。高危及致命命令还要求用户勾选风险确认,' +
-      '致命级要求手输"确认执行"。你无法代替用户批准。' +
+      '用 `sudo -n` 以 root 身份执行一条命令。**两阶段**:第一次调用只返回 awaiting-user 与一份 promptForUser' +
+      '(命令原文 + 风险等级 + 逐条风险点 + 回滚建议);把它原样发给用户并结束本轮,用户回复同意后,再调用 ' +
+      'approval_resume(approvalId, decision:"allow", userReply:"<用户原话>") 才真正执行。' +
+      '你无法代替用户批准:缺少 userReply、或距发起不到最短等待时间都会被拒绝。' +
+      '超时(默认 30 分钟)按拒绝关闭。' +
       '系统授权根文件(/etc/passwd、/etc/sudoers、/etc/shadow)与不可逆破坏动作(磁盘、裸写设备)仍然被硬拦。',
     inputSchema: {
       command: z.string().min(1).max(8192).describe('要执行的命令原文(不含 sudo 前缀,工具会自己加)'),
@@ -827,11 +863,11 @@ server.registerTool(
 server.registerTool(
   'delete_path',
   {
-    title: '删除文件或目录(每次都必须人工审批)',
+    title: '删除文件或目录(必须先拿到用户回复)',
     description:
       '删除服务器上一个**确定的绝对路径**。结构化参数(不是 shell 字符串),因此不会出现引号/通配符注入。' +
-      '每次调用都会弹出审批页面,用户点"允许"后才删除;删除不可恢复,' +
-      '因此页面会把"这是删除"单独置顶,并要求用户勾选风险确认。' +
+      '**两阶段**:第一次调用只返回 awaiting-user 与确认稿(删除目标会单独置顶,并列出不可恢复的原因),' +
+      '你把它发给用户、结束本轮;用户回复同意后用 approval_resume 才真正删除。' +
       '根目录、系统顶层目录(/etc、/usr、/root、/var … 本身)、受保护路径(账户/凭据/系统配置/MySQL 数据)一律拒绝。' +
       '需要 root 权限才能删的路径(如 /root 下的目录)请把 sudo 设为 true。',
     inputSchema: {
@@ -938,10 +974,11 @@ server.registerTool(
 server.registerTool(
   'fetch_url',
   {
-    title: '从网络下载文件到服务器(每次都必须人工审批)',
+    title: '从网络下载文件到服务器(必须先拿到用户回复)',
     description:
-      '用 curl 把一个 http(s) URL 下载到服务器上的确定路径。**每次调用都会弹出审批页面**,' +
-      '页面会显示 URL、落盘路径、来源协议与风险点(非 https、直连 IP、覆盖已有文件等)。' +
+      '用 curl 把一个 http(s) URL 下载到服务器上的确定路径。**两阶段**:第一次调用只返回 awaiting-user 与确认稿' +
+      '(URL、落盘路径、来源协议、非 https/直连 IP/覆盖已有文件等风险点);你把它发给用户、结束本轮,' +
+      '用户同意后用 approval_resume 才真正下载。' +
       '这只下载,**绝不执行**下载下来的内容 —— 要运行它必须另外走 sudo_exec 并重新审批。' +
       '下载完成后会回传 sha256 与文件大小,便于核对来源。' +
       'http:// 明文下载会被标为高风险;URL 内嵌凭据(user:pass@)、ftp/file 协议、shell 元字符一律拒绝。',
@@ -1066,18 +1103,31 @@ server.registerTool(
 server.registerTool(
   'approval_resume',
   {
-    title: '继续等待一个待审批请求',
+    title: '把用户的回复落实为审批结果',
     description:
-      '当某个工具返回 status="pending" 时,用它继续等待同一个请求的审批结果(不会重复发起新请求,' +
-      '也不会重复执行)。用户已决定时立即返回结果;还没决定就再等 waitMs 毫秒。',
+      '**对话审批模式(默认)**下:某个工具返回 status="awaiting-user" 后,你应当把 promptForUser 原样发给用户、' +
+      '结束本轮等他回复。用户明确同意后,用 decision="allow" 并把 userReply 填成**用户的原话**(逐字,不得编造);' +
+      '用户拒绝时 decision="deny"。缺少 userReply、或距发起不到最短等待时间,都会被拒绝 —— ' +
+      '因为那说明请求根本没被展示给用户。' +
+      '**浏览器审批模式**下:该工具只用于继续等待页面结果,不需要 decision。',
     inputSchema: {
-      approvalId: z.string().min(4).max(64).describe('pending 结果里的 approvalId'),
-      waitMs: z.number().int().min(1000).max(55000).optional().describe('本次最多等待毫秒数,默认与审批设置一致'),
+      approvalId: z.string().min(4).max(64).describe('awaiting-user / pending 结果里的 approvalId'),
+      decision: z
+        .enum(['allow', 'deny'])
+        .optional()
+        .describe('对话模式:用户同意传 allow,拒绝传 deny。浏览器模式不需要'),
+      userReply: z
+        .string()
+        .min(1)
+        .max(2000)
+        .optional()
+        .describe('用户在对话里同意时的**原话**(逐字)。绝不可编造;缺了会以 needs-user-reply 拒绝'),
+      waitMs: z.number().int().min(1000).max(55000).optional().describe('浏览器模式下最多等待毫秒数'),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
   },
-  async ({ approvalId, waitMs }) => {
-    const outcome = await approvalGate().resume(approvalId, { waitMs });
+  async ({ approvalId, decision, userReply, waitMs }) => {
+    const outcome = await approvalGate().resume(approvalId, { decision, userReply, waitMs });
     const shaped = respondOutcome(outcome, {
       server: outcome.server ?? '(unknown)',
       command: outcome.command ?? '',
@@ -1144,13 +1194,14 @@ server.registerTool(
       approval: {
         ...approvalGate().stats(),
         channels: {
+          chat: '对话确认(默认):工具返回确认稿 → 模型告知用户 → 等用户回复 → approval_resume 执行',
           prompt: '浏览器一次性审批页面(人点"允许"才执行)',
           deny: '全部拒绝(无人值守用)',
           allow: '跳过审批(仅供测试,启动时会告警)',
         },
       },
       writeChannels: [
-        { tool: 'ssh_exec_approved', requiresApproval: true, sudo: false, note: 'approvedByUser 只是声明,真正生效的是页面点击' },
+        { tool: 'ssh_exec_approved', requiresApproval: true, sudo: false, note: 'approvedByUser 只是声明,真正生效的是用户回复' },
         { tool: 'sudo_exec', requiresApproval: true, sudo: true, note: '以 root 执行;approvalMode=deny 时必拒' },
         { tool: 'delete_path', requiresApproval: true, sudo: 'optional', note: '结构化删除,不可恢复' },
         { tool: 'fetch_url', requiresApproval: true, sudo: 'optional', note: '只下载不执行;下载后可核对 sha256' },
@@ -1158,7 +1209,8 @@ server.registerTool(
       notes: [
         'SSH 密码认证永不使用,仅密钥;私钥位于工作区外,配置文件中不含密钥材料。',
         '每台服务器必须固定主机指纹,否则拒绝连接。',
-        '所有写操作都必须经人工审批:审批页面只在本机 127.0.0.1 随机端口监听,令牌一次性、5 分钟过期。',
+        '写操作是两阶段的:第一次调用只返回确认稿,用户回复并 approval_resume 后才执行。',
+        '对话审批依赖模型如实转述与等待,属于流程约束而非密码学强制;需要更强保证请设 DSH_VPS_APPROVAL_MODE=prompt(浏览器页面)。',
         '批准记录写入失败时不执行(fail-closed)。',
         'SSH 会话以 ops-us 身份建立;sudo_exec 通过 sudo -n 提权,实际能否提权仍由服务器侧 sudoers 决定。',
         'servers.json 修改后热生效,无需重启 MCP 服务。',
@@ -1174,8 +1226,12 @@ async function main() {
   const inv = currentInventory();
   const settings = approvalSettings();
   log(`启动 v${SERVER_VERSION} | 清单 ${inv.path} | ${inv.servers.size} 台服务器 | default=${inv.defaultName ?? '(未设置)'}`);
-  log(`审批模式 ${settings.mode}:单次等待 ${settings.waitMs}ms,请求有效期 ${settings.ttlMs}ms`);
-  if (settings.mode === 'allow') {
+  log(`审批模式 ${settings.mode}:请求有效期 ${settings.ttlMs}ms${settings.mode === 'chat' ? `,最短等待 ${settings.minDelayMs}ms` : `,单次等待 ${settings.waitMs}ms`}`);
+  if (settings.mode === 'chat') {
+    log('对话确认模式:写操作会先返回确认稿,由模型告知你并等你回复;浏览器页面不再打开。');
+  } else if (settings.mode === 'prompt') {
+    log('浏览器审批模式:写操作会在本机弹出一次性审批页面。');
+  } else if (settings.mode === 'allow') {
     log('⚠⚠⚠ 警告:DSH_VPS_APPROVAL_MODE=allow —— 所有写操作都会跳过人工审批直接执行。仅限自动化测试使用。');
   } else if (settings.mode === 'deny') {
     log('审批模式为 deny:所有需要审批的操作都会被拒绝。');

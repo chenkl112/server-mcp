@@ -224,11 +224,11 @@ cp servers.example.json servers.json
 | `read_only_command` | 白名单和 shell 结构校验后的只读命令，禁止用户提供 sudo |
 | `read_file` | 读取确定的绝对路径，默认最多 256 KiB，拒绝凭据形态及引号、转义、展开 |
 | `review_command` | **只审查不执行**：返回风险等级、逐条风险点、回滚建议、会不会被硬拦 |
-| `ssh_exec_approved` | 普通写操作（非 root），仍要求 `approvedByUser` + **浏览器点击** |
-| `sudo_exec` | 以 root 执行；每次必弹审批页，致命级要求手输"确认执行" |
+| `ssh_exec_approved` | 普通写操作（非 root）；两阶段，需用户回复确认 |
+| `sudo_exec` | 以 root 执行；两阶段，需用户回复确认 |
 | `delete_path` | 结构化删除（绝对路径 + `recursive`），删除类强制置顶审查 |
 | `fetch_url` | 只下载到指定路径、**绝不执行**，回传 sha256 便于核对 |
-| `approval_resume` | 某次调用返回 `pending` 时继续等待同一请求的结果 |
+| `approval_resume` | 把用户的回复落实为审批结果（`decision` + `userReply`），或继续等浏览器页面 |
 | `read_audit_log` | 查询命令尝试、审批来源、风险等级与结果，或最近记录的汇总 |
 | `policy_info` | 查看策略、审批模式、指纹固定状态和限制 |
 
@@ -238,29 +238,40 @@ cp servers.example.json servers.json
 
 **为什么不是布尔参数。** 早期版本只要求调用方传 `approvedByUser: true`。那是**模型自己填的字段**：被提示注入的 agent 写个 `true` 就执行了，审计里也分不出"用户真的同意过"和"它自己声明的"。
 
-DSH 的 MCP 客户端是 `new Client(..., { capabilities: {} })`，不声明 elicitation，也没有注册客户端请求处理器，因此服务端无法通过 MCP 协议弹窗。审批只能做成带外闸门：
+默认是**对话确认（chat）**，写操作分两阶段：
 
-| 环节 | 实现 |
+```
+第 1 次调用 sudo_exec
+  → { status: "awaiting-user", approvalId, promptForUser }
+      promptForUser：命令原文 + 风险等级 + 逐条风险点 + 回滚建议
+  → 模型把这段原样发给你，结束本轮，等你回复
+你回「允许执行」
+  → 模型调用 approval_resume(approvalId, decision="allow", userReply="允许执行")
+  → 这时才真正执行
+```
+
+三道防"模型自己批准"的闸：
+
+| 闸 | 作用 |
 |---|---|
-| 发起 | 工具调用在 MCP 进程内建一条请求记录，256 位随机令牌，起一个只监听 `127.0.0.1` 的随机端口 |
-| 呈现 | 默认浏览器打开一次性页面：命令原文、目标、登录账户、**风险等级 + 逐条风险点 + 回滚建议** |
-| 判定 | 只有页面 POST `decision=allow` 才执行；`deny`、关窗、超时一律按拒绝 |
-| 绑定 | 令牌指向那条具体命令原文；提交后令牌立即作废（一次性） |
-| 时序 | 请求有效期 5 分钟；单次工具调用最多阻塞 45 秒，超时返回 `pending`，用 `approval_resume` 继续等 |
-| 并发 | 同一时刻只允许**一个**待审批请求，避免用弹窗把用户训练成无脑点"允许" |
-| 失败关闭 | 通道起不来、端口被占、令牌不对、非法令牌累计 10 次 → 全部按拒绝结算 |
+| 两阶段 | 第一次调用**绝不执行**，只返回确认稿 |
+| 必须带 `userReply` | 缺了就返回 `needs-user-reply`；那句原话进审计，编造了事后看得见 |
+| `minDelayMs`（默认 8 秒） | 同一轮里立刻批准 → `too-fast`。用户不可能在 8 秒内读完风险报告 |
 
-确认强度随风险等级变化（**服务端二次校验**，不依赖浏览器 `required`）：
+**这个模式比浏览器模式弱，得说清楚**：服务端无法验证"用户真的回复过"，只能验证"模型带来了原话"和"时间上说得通"。需要强保证时用 `prompt` 模式——浏览器一次性页面（令牌 256 位、一次性、5 分钟过期、非法尝试 10 次即关闭），那条路径模型无法伪造。
 
-| 等级 | 用户要做什么 |
-|---|---|
-| 低 / 中 | 点一次"允许执行" |
-| 高 | 额外勾选"我已阅读风险与回滚建议" |
-| 致命 | 额外手输 `确认执行` |
+| 模式 | 值 | 谁做决定 |
+|---|---|---|
+| chat（默认） | `DSH_VPS_APPROVAL_MODE=chat` | 你在对话里回话，模型转交 |
+| prompt | `DSH_VPS_APPROVAL_MODE=prompt` | 你在浏览器页面上点"允许" |
+| deny | `DSH_VPS_APPROVAL_MODE=deny` | 一律拒绝（无人值守） |
+| allow | `DSH_VPS_APPROVAL_MODE=allow` | 跳过（仅测试，启动告警） |
 
-环境变量：`DSH_VPS_APPROVAL_MODE`（`prompt` 默认 / `deny` 一律拒绝 / `allow` 仅测试）、`DSH_VPS_APPROVAL_TTL_MS`（默认 300000）、`DSH_VPS_APPROVAL_WAIT_MS`（默认 45000，上限 55000）。MCP 客户端的工具超时必须大于等待时长。
+`prompt` 模式的确认强度随等级变化（**服务端二次校验**，不依赖浏览器 `required`）：高危及致命需勾选"已阅读风险"，致命还需手输 `确认执行`。
 
-**它挡住什么、挡不住什么。** 挡住了"模型自己声明批准就执行"，也挡住了"模型悄悄换一条命令执行"。**没挡住**一个能在本机任意执行命令的进程去 POST 那个本地端口；令牌不进模型上下文、一次性、5 分钟过期、非法尝试 10 次即关闭，但这抬高门槛而非密码学强制。真正的硬边界是服务端 sudo 规则（见下）。
+环境变量：`DSH_VPS_APPROVAL_TTL_MS`（chat 默认 30 分钟 / prompt 默认 5 分钟）、`DSH_VPS_CHAT_MIN_DELAY_MS`（默认 8000）、`DSH_VPS_APPROVAL_WAIT_MS`（仅 prompt，默认 45000）。
+
+**它挡住什么、挡不住什么。** 挡住了"模型自己声明批准就执行"，也挡住了"模型悄悄换一条命令执行"。**没挡住**一个能直接控制 MCP 进程的对手；真正的硬边界是服务端 sudo 规则（见下）。
 
 ## 风险审查引擎（0.5.0）
 

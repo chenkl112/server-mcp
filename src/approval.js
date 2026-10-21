@@ -47,22 +47,31 @@ function clampInt(raw, def, min, max) {
 
 /**
  * 当前审批模式。
- *   prompt(默认):浏览器一次性页面,人点"允许"才执行
- *   deny         :完全关闭审批(所有需要审批的操作一律拒绝),适合无人值守
- *   allow        :**仅供自动化测试**,不弹窗直接放行 —— 启动时会大声告警
+ *   chat(默认) :不弹页面。工具直接返回"待确认"与风险报告,由模型在对话里告知用户,
+ *                模型结束本轮等用户回复,再用 approval_resume(decision, userReply) 继续。
+ *   prompt     :浏览器一次性页面,人在页面上点"允许"才执行(最难的伪造路径)
+ *   deny       :完全关闭审批(所有需要审批的操作一律拒绝),适合无人值守
+ *   allow      :**仅供自动化测试**,不弹窗直接放行 —— 启动时会大声告警
  */
 export function approvalMode(env = process.env) {
-  const raw = String(env.DSH_VPS_APPROVAL_MODE ?? 'prompt').trim().toLowerCase();
+  const raw = String(env.DSH_VPS_APPROVAL_MODE ?? 'chat').trim().toLowerCase();
   if (['deny', 'never', 'off', 'none'].includes(raw)) return 'deny';
   if (['allow', 'auto', 'yolo'].includes(raw)) return 'allow';
-  return 'prompt';
+  if (['prompt', 'browser', 'web', 'ui', 'page'].includes(raw)) return 'prompt';
+  return 'chat';
 }
 
+const CHAT_TTL_MS = 1800000; // 对话式确认给人思考时间:30 分钟
+const CHAT_MIN_DELAY_MS = 8000; // 小于这个间隔就"批准",说明模型没等用户回话
+
 export function approvalSettings(env = process.env) {
+  const mode = approvalMode(env);
   return {
-    mode: approvalMode(env),
-    ttlMs: clampInt(env.DSH_VPS_APPROVAL_TTL_MS, DEFAULT_TTL_MS, 5000, 3600000),
+    mode,
+    ttlMs: clampInt(env.DSH_VPS_APPROVAL_TTL_MS, mode === 'chat' ? CHAT_TTL_MS : DEFAULT_TTL_MS, 5000, 3600000),
     waitMs: clampInt(env.DSH_VPS_APPROVAL_WAIT_MS, DEFAULT_WAIT_MS, 1000, 55000),
+    // 对话模式的"人应该读过东西"下限:模型在同一轮里立刻 resume 一定没有被展示过
+    minDelayMs: clampInt(env.DSH_VPS_CHAT_MIN_DELAY_MS, CHAT_MIN_DELAY_MS, 0, 600000),
   };
 }
 
@@ -100,6 +109,57 @@ function safeEqual(a, b) {
   const bb = Buffer.from(String(b));
   if (ba.length !== bb.length) return false;
   return timingSafeEqual(ba, bb);
+}
+
+const SEVERITY_CN = { low: '低', medium: '中', high: '高', critical: '致命' };
+
+/**
+ * 对话模式下的确认稿:模型应当把这段原样发给用户,然后停下来等回复。
+ *
+ * 为什么把稿子也生成好:如果只回一句"需要确认",各模型自由发挥的结果差别很大
+ * —— 有的只说"要重启服务",有的会把致命命令写成"一个小的改动"。把命令原文、
+ * 风险点与回滚建议固化成同一份文本,至少保证"用户看到的东西"和"服务端判定"
+ * 来自同一份数据。
+ */
+export function buildChatPrompt(record) {
+  const job = record.job;
+  const risk = job.risk;
+  const lines = [];
+
+  lines.push(`### 需要你确认:${job.tool}`);
+  lines.push('');
+  lines.push(`- 目标服务器:\`${job.server}\`${job.host ? ` (${job.host})` : ''}`);
+  lines.push(
+    `- 登录账户:\`${job.user ?? '(未知)'}\`${job.sudo ? ' → **sudo / root**' : ''}`,
+  );
+  if (job.reason) lines.push(`- 原因:${job.reason}`);
+  lines.push('');
+  lines.push('**将要执行的命令(原文,未改写)**:');
+  lines.push('');
+  lines.push('```bash');
+  lines.push(job.displayCommand ?? job.command);
+  lines.push('```');
+  lines.push('');
+  lines.push(
+    `**风险等级:${risk.levelLabel}**` +
+      ` ｜ 类别:${risk.categories.join('、')}` +
+      (risk.mandatoryCategories.length ? ` ｜ 强制审查:${risk.mandatoryCategories.join('、')}` : ''),
+  );
+  lines.push('');
+  for (const f of risk.findings) {
+    lines.push(`- **[${SEVERITY_CN[f.severity] ?? f.severity}] ${f.title}** — ${f.detail}`);
+  }
+  lines.push('');
+  lines.push('**回滚 / 减损建议:**');
+  for (const r of risk.rollback) lines.push(`- ${r}`);
+  lines.push('');
+  lines.push('---');
+  lines.push(
+    `请求编号 \`${record.id}\`,有效期至 ${record.expiresAt.toLocaleString('zh-CN')}。` +
+      '请直接回复「允许执行」或「拒绝」;要改命令就说明改哪里。',
+  );
+
+  return lines.join('\n');
 }
 
 /**
@@ -368,6 +428,7 @@ export function createApprovalGate(opts = {}) {
             id: record.id,
             source: record.source ?? 'local-ui',
             pageLoaded: (record.pageLoads ?? 0) > 0,
+            userReply: record.userReply ?? null,
             decidedAt: record.decidedAt ? record.decidedAt.toISOString() : null,
             waitedMs: record.decidedAt ? record.decidedAt - record.createdAt : null,
           },
@@ -410,6 +471,8 @@ export function createApprovalGate(opts = {}) {
         // 审批页是否真的被打开过。allow 却 pageLoaded=false 说明有人直接 POST 了
         // 端点而没有经过页面 —— 审计里应当能看出来。
         pageLoaded: (record.pageLoads ?? 0) > 0,
+        // 对话模式下用户在聊天里回复的原话(模型转述的),这是可审计的唯一证据
+        userReply: record.userReply ?? null,
         requestedAt: record.createdAt.toISOString(),
         decidedAt: record.decidedAt ? record.decidedAt.toISOString() : null,
         waitedMs: record.decidedAt ? record.decidedAt - record.createdAt : null,
@@ -438,7 +501,10 @@ export function createApprovalGate(opts = {}) {
         return {
           ...outcomeOf(record),
           status: 'timeout',
-          reason: '审批页面在有效期内没有被处理,按拒绝关闭(fail-closed)。',
+          reason:
+            settings.mode === 'chat'
+              ? '请求在有效期内没有得到用户回复,按拒绝关闭(fail-closed)。'
+              : '审批页面在有效期内没有被处理,按拒绝关闭(fail-closed)。',
         };
       }
       return {
@@ -459,6 +525,20 @@ export function createApprovalGate(opts = {}) {
         message: '用户已批准,命令正在执行,请用 approval_resume 获取结果。',
       };
     }
+    if (settings.mode === 'chat') {
+      return {
+        ...outcomeOf(record),
+        status: 'awaiting-user',
+        phase: 'awaiting-user',
+        expiresAt: record.expiresAt.toISOString(),
+        promptForUser: buildChatPrompt(record),
+        message:
+          '把 promptForUser 的内容原样发给用户,然后**结束本轮**等用户回复。' +
+          '用户明确同意后调用 approval_resume(approvalId, decision="allow", userReply="<用户原话>");' +
+          '用户拒绝或含糊时不要执行。不要绕过这一步。',
+      };
+    }
+
     return {
       ...outcomeOf(record),
       status: 'pending',
@@ -549,6 +629,7 @@ export function createApprovalGate(opts = {}) {
       executed: false,
       executing: false,
       pageLoads: 0,
+      userReply: null,
       resolve: settleResolved,
       settled,
     };
@@ -556,6 +637,15 @@ export function createApprovalGate(opts = {}) {
 
     record.timer = setTimeout(() => settle(record, 'timeout', { source: 'timeout' }), settings.ttlMs);
     if (typeof record.timer.unref === 'function') record.timer.unref();
+
+    // 对话模式:不弹页面,立刻把"待确认"交还给模型,由它把风险报告告诉用户并结束本轮。
+    if (settings.mode === 'chat') {
+      log(
+        `待用户确认 ${id}:${job.tool} → ${job.server}` +
+          ` ｜ ${job.risk.levelLabel}风险 ｜ ${job.risk.findings.length} 条风险点`,
+      );
+      return awaitOutcome(record, 0);
+    }
 
     try {
       await ensureServer();
@@ -574,8 +664,18 @@ export function createApprovalGate(opts = {}) {
     return awaitOutcome(record, settings.waitMs);
   }
 
-  /** 继续等待一条已发起的请求(结果已定时立即返回)。 */
-  async function resume(approvalId, { waitMs } = {}) {
+  /**
+   * 继续一条已发起的请求。
+   *
+   * 对话模式(chat)下这里就是"用户回复了"的入口:
+   *   decision=allow 需要 userReply(用户原话),且必须距发起超过 minDelayMs ——
+   *   同一轮里立刻 resume 说明请求根本没被展示给用户。
+   *   decision=deny 直接关闭。
+   * 不给 decision 时只回报当前状态,不做任何决定。
+   *
+   * 浏览器模式(prompt)下忽略 decision,保持原来的"等页面"语义。
+   */
+  async function resume(approvalId, { decision, userReply, waitMs } = {}) {
     const record = records.get(String(approvalId ?? ''));
     if (!record) {
       return {
@@ -584,7 +684,60 @@ export function createApprovalGate(opts = {}) {
         reason: '没有这条审批请求,或它早已结束并被清理。请不要重复发起,直接重新走审批。',
       };
     }
-    return awaitOutcome(record, waitMs ?? settings.waitMs);
+
+    if (settings.mode !== 'chat' || record.status !== 'pending') {
+      return awaitOutcome(record, settings.mode === 'chat' ? 0 : (waitMs ?? settings.waitMs));
+    }
+
+    if (decision === undefined || decision === null) {
+      return awaitOutcome(record, 0);
+    }
+
+    if (decision === 'deny') {
+      settle(record, 'deny', { source: 'chat', reason: 'user-denied' });
+      return awaitOutcome(record, 0);
+    }
+
+    if (decision !== 'allow') {
+      return {
+        status: 'bad-decision',
+        approvalId: record.id,
+        reason: `decision 只能是 allow 或 deny,收到 ${JSON.stringify(decision)}。`,
+      };
+    }
+
+    // ① 时间下限:同一轮里立刻批准 = 用户不可能已经看过报告
+    const elapsed = Date.now() - record.createdAt.getTime();
+    if (elapsed < settings.minDelayMs) {
+      const remainingMs = settings.minDelayMs - elapsed;
+      return {
+        status: 'too-fast',
+        approvalId: record.id,
+        elapsedMs: elapsed,
+        minDelayMs: settings.minDelayMs,
+        remainingMs,
+        reason:
+          `距发起只有 ${elapsed}ms(下限 ${settings.minDelayMs}ms)。` +
+          '说明你还没把请求展示给用户、也没等用户回复。先结束本轮,把风险报告发给用户,' +
+          `等他回话;如果用户确实秒回了,请在 ${remainingMs}ms 之后重试一次。`,
+      };
+    }
+
+    // ② 必须带上用户的原话:这是"人确实回复过"的唯一可审计证据
+    const reply = String(userReply ?? '').trim();
+    if (!reply) {
+      return {
+        status: 'needs-user-reply',
+        approvalId: record.id,
+        reason:
+          '缺少 userReply。批准必须附上用户在对话里的原话(例如"允许执行"、"可以,跑吧"),' +
+          '否则无法区分"用户同意"和"你自己决定"。不要编造这句话。',
+      };
+    }
+
+    record.userReply = reply.slice(0, 2000);
+    settle(record, 'allow', { source: 'chat' });
+    return awaitOutcome(record, settings.waitMs);
   }
 
   function stats() {
@@ -592,6 +745,7 @@ export function createApprovalGate(opts = {}) {
       mode: settings.mode,
       ttlMs: settings.ttlMs,
       waitMs: settings.waitMs,
+      minDelayMs: settings.minDelayMs,
       port,
       pending: [...records.values()].filter((r) => r.status === 'pending').length,
       pageLoads: counters.pageLoads,
