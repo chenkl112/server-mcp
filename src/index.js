@@ -74,6 +74,73 @@ function buildSudoCommand(command) {
   return needsShell ? `sudo -n bash -c ${singleQuote(command)}` : `sudo -n ${command}`;
 }
 
+/* ------------------------------------------------------------------ *
+ * 服务器侧 sudo 就绪探测
+ * ------------------------------------------------------------------ *
+ * 为什么需要:服务器侧只要没配好 NOPASSWD,`sudo_exec` 一定在最后一步失败
+ * (`sudo: a password is required`),但那时用户已经点过审批页了 —— 白跑一趟,
+ * 而且报错看起来像"服务坏了"。这里先探一次,没就绪就直接告诉用户去做什么,
+ * 连审批页都不弹。
+ */
+const SUDO_PROBE_TTL_MS = 300000; // 就绪:5 分钟内不再探
+const SUDO_PROBE_FAIL_TTL_MS = 60000; // 未就绪:1 分钟后重探,方便粘完 bootstrap 立刻重试
+const sudoProbeCache = new Map(); // serverName → { ok, checkedAt, detail }
+
+async function sudoReadiness(record, { force = false } = {}) {
+  const cached = sudoProbeCache.get(record.name);
+  if (!force && cached) {
+    const ttl = cached.ok ? SUDO_PROBE_TTL_MS : SUDO_PROBE_FAIL_TTL_MS;
+    if (Date.now() - cached.checkedAt < ttl) return cached;
+  }
+
+  const r = await exec(record, 'sudo -n true', READ_TIMEOUT_MS);
+  const ok = r.ok && r.code === 0;
+  // 区分"连不上"与"连上了但没有免密 sudo" —— 两者的处理方式完全不同。
+  const problem = ok ? null : r.ok ? 'sudo-not-configured' : 'connection';
+  const detail = ok
+    ? null
+    : r.ok
+      ? ((r.stderr || '').trim().split('\n').filter(Boolean)[0] ?? `退出码 ${r.code}`)
+      : (r.error ?? '连接失败');
+
+  const entry = { ok, problem, checkedAt: Date.now(), detail };
+  sudoProbeCache.set(record.name, entry);
+  return entry;
+}
+
+/** 未就绪时给用户的可执行指引(不弹审批页,直接回退)。 */
+function sudoNotReadyPayload(record, readiness) {
+  if (readiness.problem === 'connection') {
+    return {
+      executed: false,
+      blocked: true,
+      sudo: true,
+      server: record.name,
+      error: 'server-unreachable',
+      detail: readiness.detail,
+      reason: '连不上服务器,没法确认提权是否可用;命令没有执行,也没有弹审批页。',
+      nextStep: '先确认网络与指纹(可调 test_connection),再重试。',
+    };
+  }
+
+  return {
+    executed: false,
+    blocked: true,
+    sudo: true,
+    server: record.name,
+    error: 'server-side-sudo-not-configured',
+    detail: readiness.detail,
+    reason:
+      '服务器侧还没有给 ops-us 配置免密 sudo,所以这条命令即使你批准,也会在服务器上以 ' +
+      '`sudo: a password is required` 失败。已提前拦截,没有打扰你审批。',
+    nextStep:
+      '在服务器上以 root 执行一次 bootstrap.txt(只需一次,之后不再需要动):\n' +
+      '  1) 本机: Get-Content <凭据目录>\\bootstrap.txt | Set-Clipboard\n' +
+      '  2) 服务器: ssh ubuntu@<ip> 然后 sudo -i,粘贴执行\n' +
+      '详见 README「一次性部署」。',
+  };
+}
+
 /** 只把风险结论回传给模型(不含内部字段),便于它在对话里如实转述。 */
 function riskPayload(risk) {
   if (!risk) return null;
@@ -821,6 +888,10 @@ server.registerTool(
     if (t.error) return t.error;
     const rec = t.record;
 
+    // 先探服务器侧是否配好了免密 sudo:没配好就直说,不弹审批页白跑一趟
+    const ready = await sudoReadiness(rec);
+    if (!ready.ok) return text(sudoNotReadyPayload(rec, ready), true);
+
     const displayCommand = buildSudoCommand(command);
     const risk = assessCommand(command, { sudo: true });
 
@@ -918,6 +989,11 @@ server.registerTool(
     if (t.error) return t.error;
     const rec = t.record;
 
+    if (sudo === true) {
+      const ready = await sudoReadiness(rec);
+      if (!ready.ok) return text(sudoNotReadyPayload(rec, ready), true);
+    }
+
     const displayCommand = sudo === true ? buildSudoCommand(rm) : rm;
     const risk = assessCommand(rm, {
       sudo: sudo === true,
@@ -1014,6 +1090,11 @@ server.registerTool(
     const t = target(requested);
     if (t.error) return t.error;
     const rec = t.record;
+
+    if (sudo === true) {
+      const ready = await sudoReadiness(rec);
+      if (!ready.ok) return text(sudoNotReadyPayload(rec, ready), true);
+    }
 
     const displayCommand = sudo === true ? buildSudoCommand(curl) : curl;
 

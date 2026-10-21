@@ -62,6 +62,29 @@ node scripts/build-bootstrap.js (Join-Path $env:USERPROFILE '.ssh/vps-ops-mcp/vp
 node scripts/verify-onboarding.js web1
 ```
 
+### 一次性部署：之后还要动什么
+
+**每台服务器只初始化一次。** `ops-us` 账户、`authorized_keys`、sudoers 片段、`mcp-readonly` 包装器都写在磁盘上，重启也在，不会过期，也不需要定期重跑。
+
+| 之后发生什么 | 还要不要动服务器 |
+|---|---|
+| 改审批模式（chat ↔ prompt ↔ deny） | **不用**——只是客户端的 `DSH_VPS_APPROVAL_MODE` |
+| 改工具超时、清单、指纹 | **不用**——都在本机 |
+| 重跑 `deploy.ps1` 更新清单/验收 | **不用**——`sudoMode` 记在 `servers.json` 里，自动沿用，不会把完整 sudo 悄悄降级 |
+| 代码升级（`git pull` 后重启客户端） | **不用**——服务器侧脚本没变就不用重装 |
+| 加一台新服务器 | 每台一次。给一个能登录的管理员账户就**不用手工粘贴**：`.\deploy.ps1 -TargetHost <ip> -Name web2 -ViaExistingUser ubuntu` |
+| 真正要改服务器侧规则（`--full-sudo` ↔ `--readonly`） | 一次。`.\deploy.ps1 -Readonly` 或 `-FullSudo`，脚本会记住选择 |
+
+**没配好时不会再让你猜。** MCP 在发起 `sudo_exec` 之前会先探一次服务器侧 `sudo -n true`（成功缓存 5 分钟，失败只缓存 1 分钟，方便你粘完立刻重试）：
+
+```
+error: "server-side-sudo-not-configured"
+detail: "sudo: a password is required"
+nextStep: 在服务器上以 root 执行一次 bootstrap.txt（只需一次）
+```
+
+这种情况下**不会弹审批页**——避免你点了允许却什么也没发生的困惑。
+
 ### 常用参数
 
 | 参数 | 用途 |
@@ -74,10 +97,11 @@ node scripts/verify-onboarding.js web1
 | `-ExpectedFingerprint SHA256:...` | 首次或换钥时独立核对得到的指纹；省略时交互输入 |
 | `-Force` | 允许更新原固定指纹，仍必须独立核对新指纹 |
 | `-UpdateServer` | 即使 ops-us 已能登录，也重新安装服务端规则 |
+| `-FullSudo` | 服务端给 ops-us 完整 sudo；**选择会记进 `servers.json` 的 `sudoMode`，以后重跑自动沿用** |
+| `-Readonly` | 显式降级回只读 sudo（与 `-FullSudo` 互斥） |
 | `-BootstrapOnly` | 接入和验收，但不生成或修改客户端配置 |
 | `-ProfileFile <文件>` | 可选 DSH YAML 文件;不指定时生成通用 MCP JSON |
 | `-InventoryPath <文件>` | 私有清单路径;默认 `DSH_VPS_INVENTORY` 或项目内 `servers.json` |
-| `-FullSudo` | 服务端给 ops-us **完整 sudo**（root）。会取消服务器侧所有边界，见「sudo 的两种模式」 |
 
 新安装默认凭据目录为用户目录下的 `.ssh/vps-ops-mcp`。选择顺序为 `-CredDir`、环境变量 `VPS_OPS_CRED_DIR`、已有清单条目的密钥位置、用户目录默认值。已有条目引用的密钥丢失时中止，不悄悄生成替代密钥；只有显式指定目录或密钥名时才切换。Windows ACL 仅保留当前用户、SYSTEM 和 Administrators，清除其他显式和继承授权。自动部署使用无口令专用密钥；加密密钥可由 MCP 运行时通过清单口令加载，部署脚本会明确拒绝并避免等待输入。
 

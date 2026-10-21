@@ -49,9 +49,11 @@ param(
   # 该账户本身为 root 时可跳过 sudo
   [switch]$NoSudo,
   # 服务器侧给 ops-us **完整 sudo**(root),而不是默认的"只读包装程序"。
-  # ⚠ 这会取消服务器侧的所有边界:能不能做某事只取决于 MCP 侧审批页面有没有人点"允许"。
-  # 需要 AI 做部署/重启服务/清理 /root 时才用;用完重跑一次不带本开关即可收回。
+  # ⚠ 这会取消服务器侧的所有边界:能不能做某事只取决于 MCP 侧审批闸门有没有人点"允许"。
+  # 选择会被记进 servers.json(sudoMode),下次重跑自动沿用,不用每次记得加这个开关。
   [switch]$FullSudo,
+  # 显式降级回只读 sudo(需要重跑服务端规则时用)。与 -FullSudo 互斥。
+  [switch]$Readonly,
   [switch]$UpdateServer,
   [string]$ProfileFile,
   [string]$InventoryPath
@@ -293,6 +295,8 @@ $knownHostsPath = Join-Path $CredDir "known_hosts-$Name"
 $knownHost = if ($Port -eq 22) { $Host_ } else { "[${Host_}]:$Port" }
 [IO.File]::WriteAllText($knownHostsPath, "$knownHost $($probeData.observedPublicKey)`n", (New-Object Text.UTF8Encoding($false)))
 Lock-Acl $knownHostsPath -StripEveryone
+if ($FullSudo -and $Readonly) { Die '-FullSudo 与 -Readonly 互斥,只能选一个' }
+
 if ($existing) {
   if ($existing.user -ne 'ops-us') { Die 'deploy.ps1 只接入 ops-us 账户,请核对清单' }
   if ([IO.Path]::GetFullPath($(if ([IO.Path]::IsPathRooted($existing.key)) { $existing.key } else { Join-Path $ProjectDir $existing.key })) -ne [IO.Path]::GetFullPath($KeyPath)) { Die '指定密钥与现有清单不同,请先核对并修改清单' }
@@ -306,6 +310,25 @@ if ($existing) {
   }
   $inv.servers | Add-Member -NotePropertyName $Name -NotePropertyValue $entry
 }
+
+# --- 服务器侧 sudo 模式:一次选定,记进清单,以后重跑自动沿用 ---
+$recordedSudoMode = $null
+if ($inv.servers.$Name.PSObject.Properties.Name -contains 'sudoMode') { $recordedSudoMode = $inv.servers.$Name.sudoMode }
+$SudoMode = if ($FullSudo) { 'full' }
+            elseif ($Readonly) { 'readonly' }
+            elseif ($recordedSudoMode) { $recordedSudoMode }
+            else { 'readonly' }
+$modeSource = if ($FullSudo) { '-FullSudo' }
+              elseif ($Readonly) { '-Readonly' }
+              elseif ($recordedSudoMode) { "清单记录($recordedSudoMode)" }
+              else { '默认' }
+$inv.servers.$Name | Add-Member -NotePropertyName sudoMode -NotePropertyValue $SudoMode -Force
+if ($SudoMode -eq 'full') {
+  Warn "服务器侧 sudo 模式:$SudoMode(来自 $modeSource)—— 该账户将拥有完整 root 权限"
+} else {
+  Ok "服务器侧 sudo 模式:$SudoMode(来自 $modeSource)"
+}
+
 if (-not $inv.default) { $inv | Add-Member -NotePropertyName default -NotePropertyValue $Name -Force }
 [IO.File]::WriteAllText($InventoryPath, ($inv | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
 Ok "已写入 $Name → ops-us@${Host_}:$Port,指纹已固定"
@@ -326,7 +349,7 @@ if ($probeUser.ExitCode -ne 0 -or $UpdateServer) {
 
   # 落一份到文件:终端复制长 base64 容易漏字符,从文件整段复制更稳
   $bootstrapPath = Join-Path $CredDir 'bootstrap.txt'
-  $fullSudoArg = if ($FullSudo) { @('--full-sudo') } else { @() }
+  $fullSudoArg = if ($SudoMode -eq 'full') { @('--full-sudo') } else { @() }
   & node (Join-Path $ProjectDir 'scripts\build-bootstrap.js') $PubPath $bootstrapPath @fullSudoArg
   if ($LASTEXITCODE -ne 0) { Die '生成引导命令失败' }
   $bootstrapLines = Get-Content $bootstrapPath

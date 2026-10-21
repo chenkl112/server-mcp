@@ -192,3 +192,21 @@ test('DSH profile 只在显式传入时更新,否则生成通用配置', () => {
   assert.match(raw, /configure-mcp\.js/);
   assert.equal(raw.includes('profiles\\web'), false);
 });
+
+test('服务器侧 sudo 模式只选一次并记住,重跑不会静默降级', () => {
+  // 显式开关与降级开关互斥
+  assert.match(raw, /\[switch\]\$Readonly/);
+  assert.match(raw, /'-FullSudo 与 -Readonly 互斥/);
+
+  // 优先级:显式开关 > 清单记录 > 默认只读
+  assert.match(raw, /\$SudoMode = if \(\$FullSudo\) \{ 'full' \}/);
+  assert.match(raw, /elseif \(\$recordedSudoMode\) \{ \$recordedSudoMode \}/);
+  assert.match(raw, /else \{ 'readonly' \}/);
+
+  // 选择要落进清单,否则下次无从沿用
+  assert.match(raw, /Add-Member -NotePropertyName sudoMode/);
+
+  // 安装时必须用解析后的模式,而不是直接用 -FullSudo 开关
+  assert.match(raw, /\$fullSudoArg = if \(\$SudoMode -eq 'full'\)/);
+  assert.equal(/if \(\$FullSudo\) \{ @\('-full-sudo'\) \}/.test(raw), false, '不得直接以 -FullSudo 决定安装模式');
+});
