@@ -46,6 +46,9 @@ param(
   # 借助一个**已能登录**的账户(通常是 ubuntu)代为创建 ops-us,从而免去手工粘贴那一大段命令。
   # 代价:该账户权限更大,所以用完必须把这个开关带来的影响收回去(见该模式末尾的提示)。
   [string]$ViaExistingUser,
+  # 借用管理员账户完成后,默认会自动把本项专用公钥从该账户收回(只删带 dsh-vps-ops 的行)。
+  # 确实要长期用那个账户登录时才加这个开关。
+  [switch]$KeepViaKey,
   # 该账户本身为 root 时可跳过 sudo
   [switch]$NoSudo,
   # 服务器侧给 ops-us **完整 sudo**(root),而不是默认的"只读包装程序"。
@@ -379,10 +382,6 @@ if ($probeUser.ExitCode -ne 0 -or $UpdateServer) {
     if ($code -eq 0) {
       Ok "服务器侧初始化已完成(由 $ViaExistingUser 代为执行)"
       Write-Host ''
-      Write-Host '    安全提示:本次借用了权限更大的账户。建议现在收回它的临时访问权:' -ForegroundColor Yellow
-      Write-Host "      ssh $ViaExistingUser@$Host_  然后删掉 authorized_keys 里本机那把(若原本就有则无需处理)" -ForegroundColor Yellow
-      Write-Host '    本工具后续只使用受限账户 ops-us。' -ForegroundColor Yellow
-      Write-Host ''
       # 重新探测 ops-us
       $recheck = Invoke-Ssh -SshArgs $sshArgs -Target "ops-us@$Host_" -RemoteCommand 'id'
       if ($recheck.ExitCode -eq 0) {
@@ -390,6 +389,21 @@ if ($probeUser.ExitCode -ne 0 -or $UpdateServer) {
       } else {
         Warn 'ops-us 仍登不上 —— 可能是 AllowUsers 未包含它(见上面脚本输出中的提示)'
         Warn "请查看 $ViaExistingUser 上执行时打印的 AllowUsers 提示"
+      }
+
+      # 用完就收回:把本项专用公钥从借用账户的 authorized_keys 里删掉,
+      # 避免留下一条"比 ops-us 权限更大"的长期通道。只删带本项目注释的那一行。
+      if ($KeepViaKey) {
+        Warn "已按 -KeepViaKey 保留 $ViaExistingUser 上的本机公钥(如需长期用它请自行留意)"
+      } else {
+        $revoke = "sed -i '/dsh-vps-ops/d' ~/.ssh/authorized_keys 2>/dev/null; grep -c 'dsh-vps-ops' ~/.ssh/authorized_keys 2>/dev/null || echo 0"
+        $rm = Invoke-Ssh -SshArgs $sshArgs -Target "$ViaExistingUser@$Host_" -RemoteCommand $revoke
+        $left = (($rm.Output) -join '').Trim()
+        if ($rm.ExitCode -eq 0 -and $left -eq '0') {
+          Ok "已收回 $ViaExistingUser 上的临时公钥(该账户不再能免密登录)"
+        } else {
+          Warn "未能自动收回 $ViaExistingUser 上的临时公钥,请手工删除 authorized_keys 里带 dsh-vps-ops 的那一行"
+        }
       }
     } else {
       Warn "通过 $ViaExistingUser 执行初始化失败(exit $code),请改用人工粘贴方式:"

@@ -145,8 +145,10 @@ test('免粘贴模式(-ViaExistingUser)存在的必要约束', () => {
   // 而不是走"降级为人工粘贴"的分支(这一点被测试抓到过一次)
   assert.match(raw, /Invoke-Ssh -SshArgs \$sshArgs -Target "\$ViaExistingUser@\$Host_" -RemoteCommand 'bash -s' -Stdin/,
     '免粘贴模式应经 Invoke-Ssh(含 -Stdin)调用');
-  // 借用了权限更大的账户,必须显式提示收回
-  assert.match(raw, /借用了权限更大的账户/, '应提示收回被借用账户的临时访问权');
+  // 借用了权限更大的账户,用完必须收回;现在默认自动收回,并保留显式保留开关
+  assert.match(raw, /\[switch\]\$KeepViaKey/, '应允许显式保留临时公钥(-KeepViaKey)');
+  assert.match(raw, /sed -i '\/dsh-vps-ops\/d'/, '应自动删除借用账户上的本项公钥');
+  assert.match(raw, /请手工删除 authorized_keys 里带 dsh-vps-ops 的那一行/, '自动收回失败时应给出手工兜底');
   // 必须支持无免密 sudo 的情况
   assert.match(raw, /\[switch\]\$NoSudo/, '应支持 -NoSudo(该账户无免密 sudo 时)');
   // 失败要降级,不能卡死
