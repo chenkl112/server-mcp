@@ -12,10 +12,14 @@
  *   node scripts/configure-codex.js --write --force  # 已存在且不一致时也覆盖
  *   node scripts/configure-codex.js --config <path>  # 指定配置文件
  *   node scripts/configure-codex.js --tools-approval-mode <auto|prompt|writes|approve>
+ *   node scripts/configure-codex.js --approval-mode <chat|prompt|deny>
  *
  * 关于 default_tools_approval_mode:必须让 Codex 放行本服务器的工具(默认 approve),
  * 否则 Codex 会按 destructiveHint 先拦掉写工具,请求根本到不了本服务端。
  * 合法值由 Codex 自己的 serde 校验给出。
+ *
+ * 关于 --approval-mode:不传就不写 `DSH_VPS_APPROVAL_MODE`,即用服务端默认(chat 对话确认)。
+ * 传 prompt 则改用浏览器一次性页面 —— 令牌模型无法伪造,是更强的保证。
  *
  * 退出码: 0 已一致或写入成功; 2 需要人工处理(存在冲突)
  */
@@ -50,6 +54,8 @@ const options = {
   toolTimeoutSec: Number(value('--tool-timeout-sec', 620)),
   startupTimeoutSec: 20,
   toolsApprovalMode: value('--tools-approval-mode', 'approve'),
+  // 只有显式给出 --approval-mode 才写进配置;不传则保持服务端默认(chat)
+  approvalMode: value('--approval-mode', null),
 };
 
 console.log('=== Codex MCP 配置 ===\n');

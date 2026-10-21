@@ -138,3 +138,24 @@ test('必须让 Codex 放行本服务器的工具(否则写工具根本发不出
   const custom = renderCodexSnippet({ ...BASE, toolsApprovalMode: 'writes' });
   assert.match(custom, /^default_tools_approval_mode = "writes"$/m);
 });
+
+test('审批模式:不指定时不写,指定了就写,且不会悄悄清掉已有值', () => {
+  // 不指定 → 不出现该键(服务端默认 chat)
+  const plain = upsertCodexMcp('', BASE).text;
+  assert.equal(/DSH_VPS_APPROVAL_MODE/.test(plain), false);
+
+  // 指定 prompt → 写进 env 表
+  const withPrompt = upsertCodexMcp('', { ...BASE, approvalMode: 'prompt' }).text;
+  assert.match(withPrompt, /^DSH_VPS_APPROVAL_MODE = "prompt"$/m);
+
+  // 已存在 prompt,再次以"不指定"的方式合并 → 必须保留,不能被清掉
+  const kept = upsertCodexMcp(withPrompt, BASE);
+  assert.match(kept.text, /^DSH_VPS_APPROVAL_MODE = "prompt"$/m);
+
+  // 显式改回 chat
+  const back = upsertCodexMcp(withPrompt, { ...BASE, approvalMode: 'chat' }).text;
+  assert.match(back, /^DSH_VPS_APPROVAL_MODE = "chat"$/m);
+
+  // 非法值直接报错
+  assert.throws(() => upsertCodexMcp('', { ...BASE, approvalMode: 'sometimes' }), /approvalMode/);
+});

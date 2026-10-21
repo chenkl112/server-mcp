@@ -267,6 +267,17 @@ cp servers.example.json servers.json
 | deny | `DSH_VPS_APPROVAL_MODE=deny` | 一律拒绝（无人值守） |
 | allow | `DSH_VPS_APPROVAL_MODE=allow` | 跳过（仅测试，启动告警） |
 
+**两种保证怎么配**（服务器侧 sudo 模式 × 审批模式）：
+
+| 服务器侧 | 审批 | 强度 | 说明 |
+|---|---|---|---|
+| `readonly` | chat | 中 | 服务器侧有硬边界；写操作只限只读子命令 |
+| `readonly` | prompt | 较强 | 同上，且批准令牌模型无法伪造 |
+| `full-sudo` | **prompt** | **推荐** | 能做任何 root 操作，但每次都要你在浏览器页面点；令牌只有你的浏览器见过 |
+| `full-sudo` | chat | 最弱 | 能做任何 root 操作，而批准只靠对话约定——不建议 |
+
+本项目当前配置即第三行：完整 sudo + 浏览器审批。
+
 `prompt` 模式的确认强度随等级变化（**服务端二次校验**，不依赖浏览器 `required`）：高危及致命需勾选"已阅读风险"，致命还需手输 `确认执行`。
 
 环境变量：`DSH_VPS_APPROVAL_TTL_MS`（chat 默认 30 分钟 / prompt 默认 5 分钟）、`DSH_VPS_CHAT_MIN_DELAY_MS`（默认 8000）、`DSH_VPS_APPROVAL_WAIT_MS`（仅 prompt，默认 45000）。

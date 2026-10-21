@@ -132,6 +132,8 @@ export function upsertCodexMcp(source, options) {
     toolTimeoutSec = 620,
     startupTimeoutSec = 20,
     toolsApprovalMode = DEFAULT_TOOLS_APPROVAL_MODE,
+    // 只有显式给出时才写 DSH_VPS_APPROVAL_MODE;不传 = 保持服务端默认(chat),也绝不清掉已有值。
+    approvalMode = null,
   } = options;
 
   if (!command) throw new Error('缺少 command');
@@ -170,6 +172,13 @@ export function upsertCodexMcp(source, options) {
     ['DSH_VPS_INVENTORY', tomlString(env.DSH_VPS_INVENTORY ?? '')],
     ['DSH_VPS_ALLOW_TOFU', tomlString(env.DSH_VPS_ALLOW_TOFU ?? '0')],
   ]);
+  // 审批模式:显式指定才写。不指定时保持服务端默认(chat),且不会清掉已有值。
+  if (approvalMode) {
+    if (!['chat', 'prompt', 'deny', 'allow'].includes(approvalMode)) {
+      throw new Error(`approvalMode 只能是 chat/prompt/deny/allow,收到 ${approvalMode}`);
+    }
+    wantedEnv.set('DSH_VPS_APPROVAL_MODE', tomlString(approvalMode));
+  }
 
   const changedKeys = [];
   for (const [k, v] of wantedMain) {
@@ -237,13 +246,20 @@ export function renderCodexSnippet(options) {
     toolTimeoutSec = 620,
     startupTimeoutSec = 20,
     toolsApprovalMode = DEFAULT_TOOLS_APPROVAL_MODE,
+    approvalMode = null,
   } = options;
+  const approvalLines = approvalMode
+    ? [
+        `# 审批模式:prompt = 浏览器一次性页面(令牌模型无法伪造);chat = 对话确认。`,
+        `DSH_VPS_APPROVAL_MODE = ${tomlString(approvalMode)}`,
+      ]
+    : [`# 未设 DSH_VPS_APPROVAL_MODE → 服务端默认 chat(对话确认);要浏览器页面就设成 prompt。`];
   return [
     `[mcp_servers.${name}]`,
     `command = ${tomlString(command)}`,
     `args = ${tomlStringArray(args)}`,
     'enabled = true',
-    `# 让 Codex 放行本服务器的工具:人工审批由 MCP 进程内的浏览器页面负责。`,
+    `# 让 Codex 放行本服务器的工具:人工审批由 MCP 进程内的审批闸门负责。`,
     `# 用默认值 auto 时,Codex 会先按 destructiveHint 拦掉写工具,报`,
     `# "MCP tool call requires approval, but approval policy is never"。`,
     `default_tools_approval_mode = ${tomlString(toolsApprovalMode)}`,
@@ -254,8 +270,7 @@ export function renderCodexSnippet(options) {
     `[mcp_servers.${name}.env]`,
     `DSH_VPS_INVENTORY = ${tomlString(env.DSH_VPS_INVENTORY ?? '')}`,
     `DSH_VPS_ALLOW_TOFU = ${tomlString(env.DSH_VPS_ALLOW_TOFU ?? '0')}`,
-    `# 不要设 DSH_VPS_APPROVAL_MODE:默认 chat(对话确认)才是"每次必问";`,
-    `# 想要浏览器人工页面就设成 prompt。`,
+    ...approvalLines,
     '',
   ].join('\n');
 }
