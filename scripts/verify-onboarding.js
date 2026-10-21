@@ -111,22 +111,47 @@ console.log('\n[3/5] 提权面核验(关键安全项)');
 
   // 这些必须失败。用只读白名单放行的形式去测提权是否被拒:
   //   sudo -n <危险命令> 会被 ssh_exec 交给远端 shell,由 sudoers 决定成败
-  const mustDeny = [
-    ['sudo -n -l -- systemctl start docker', 'systemctl start 必须被拒'],
-    ['sudo -n -l -- systemctl edit docker', 'systemctl edit 必须被拒(可注入 root 单元)'],
-    ['sudo -n -l -- docker run --rm alpine true', 'docker run 必须被拒(容器即 root)'],
-    ['sudo -n -l -- cat /etc/shadow', '读 shadow 必须被拒'],
-    ['sudo -n -l -- useradd hacker', '建账户必须被拒'],
-    ['sudo -n -l -- journalctl --rotate', '日志维护必须被拒'],
-    ['sudo -n -l -- dmesg -C', '清内核日志必须被拒'],
-    ['sudo -n -l -- ss -K', '断开连接必须被拒'],
-  ];
-  for (const [cmd, label] of mustDeny) {
-    // 注意:sudo 命令不走只读白名单,这里直接调用 SSH 层是有意的 ——
-    // 目的就是验证"服务器端的 sudoers 是否拒绝",而不是验证本地白名单。
-    const r = await runCommand(rec, cmd, { timeoutMs: 20000 });
-    const denied = !r.timedOut && r.code === 1;
-    record(label, denied, denied ? '' : '⚠ 竟然成功,提权面未收窄!');
+  //
+  // 但**完整 sudo 模式下它们本来就该被授权** —— 那正是 --full-sudo 的含义。
+  // 所以先判断当前是哪种模式:清单里记录了就用记录,没记录就实测一次。
+  const probeRoot = await runCommand(rec, 'sudo -n id -u', { timeoutMs: 20000 });
+  const fullSudo =
+    rec.sudoMode === 'full' || (rec.sudoMode === null && !probeRoot.timedOut && probeRoot.code === 0);
+
+  if (fullSudo) {
+    record(
+      '服务器侧 sudo 模式',
+      true,
+      'full —— 提权面是整台机器,不存在"必须被拒"的项目(这是 --full-sudo 的定义)',
+    );
+    const mustAllow = [
+      ['sudo -n id -u', 'sudo 仍可提权到 root'],
+      ['sudo -n -l -- systemctl start docker', 'systemctl start 已被授权(预期)'],
+      ['sudo -n -l -- cat /etc/shadow', '读 shadow 已被授权(预期)'],
+    ];
+    for (const [cmd, label] of mustAllow) {
+      const r = await runCommand(rec, cmd, { timeoutMs: 20000 });
+      const ok = !r.timedOut && r.code === 0;
+      record(label, ok, ok ? '' : `⚠ 预期被授权却失败:${(r.stderr || '').trim().split('\n')[0] ?? ''}`);
+    }
+  } else {
+    const mustDeny = [
+      ['sudo -n -l -- systemctl start docker', 'systemctl start 必须被拒'],
+      ['sudo -n -l -- systemctl edit docker', 'systemctl edit 必须被拒(可注入 root 单元)'],
+      ['sudo -n -l -- docker run --rm alpine true', 'docker run 必须被拒(容器即 root)'],
+      ['sudo -n -l -- cat /etc/shadow', '读 shadow 必须被拒'],
+      ['sudo -n -l -- useradd hacker', '建账户必须被拒'],
+      ['sudo -n -l -- journalctl --rotate', '日志维护必须被拒'],
+      ['sudo -n -l -- dmesg -C', '清内核日志必须被拒'],
+      ['sudo -n -l -- ss -K', '断开连接必须被拒'],
+    ];
+    for (const [cmd, label] of mustDeny) {
+      // 注意:sudo 命令不走只读白名单,这里直接调用 SSH 层是有意的 ——
+      // 目的就是验证"服务器端的 sudoers 是否拒绝",而不是验证本地白名单。
+      const r = await runCommand(rec, cmd, { timeoutMs: 20000 });
+      const denied = !r.timedOut && r.code === 1;
+      record(label, denied, denied ? '' : '⚠ 竟然成功,提权面未收窄!');
+    }
   }
 }
 
@@ -199,5 +224,10 @@ if (failed.length) {
   for (const f of failed) console.log(`  ✗ ${f.label}${f.detail ? `  ${f.detail}` : ''}`);
   process.exitCode = 1;
 } else {
-  console.log('全部通过 —— 通道可用且提权面已按设计收窄。\n');
+  // 收窄 / 放开是两种设计,别用同一句话把 --full-sudo 说成"已收窄"
+  console.log(
+    rec.sudoMode === 'full'
+      ? '全部通过 —— 通道可用;服务器侧为完整 sudo(提权面=整台机器),边界由 MCP 审批闸门负责。\n'
+      : '全部通过 —— 通道可用且提权面已按设计收窄。\n',
+  );
 }

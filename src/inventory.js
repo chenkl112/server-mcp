@@ -108,6 +108,14 @@ function normalizeEntry(name, raw, { inventoryDir, globalFingerprints, env }) {
     passphrase: passRaw || undefined,
     accepted,
     note: typeof s.note === 'string' ? s.note : null,
+    /**
+     * 服务器侧 sudo 模式(由 deploy.ps1 写入,只是**记录**而非强制):
+     *   'full'      —— server-setup.sh 以 --full-sudo 装过,ops-us 有 NOPASSWD: ALL
+     *   'readonly'  —— 只授权 root 所有的 mcp-readonly 包装程序
+     *   null        —— 未记录(老清单);以实际探测结果为准
+     * 验收脚本用它决定"提权面"该期待"放行"还是"拒绝"。
+     */
+    sudoMode: s.sudoMode === 'full' || s.sudoMode === 'readonly' ? s.sudoMode : null,
     limits: {
       connectTimeoutMs: clampInt(s.connectTimeoutMs, DEFAULT_LIMITS.connectTimeoutMs, 1000, 60000),
       hardTimeoutMs: clampInt(s.hardTimeoutMs, DEFAULT_LIMITS.hardTimeoutMs, 1000, 600000),
@@ -206,6 +214,7 @@ export function describeServer(record) {
     keyPath: record.keyPath,
     note: record.note,
     pinnedFingerprints: record.accepted.map((f) => (f.algo ? `${f.algo} ${f.fp}` : f.fp)),
+    sudoMode: record.sudoMode ?? null,
     ready: record.problems.length === 0,
     problems: record.problems,
   };
