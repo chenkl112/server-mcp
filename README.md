@@ -1,6 +1,8 @@
 # dsh-vps-ops-mcp
 
-通过 SSH 管理多台 Linux 服务器的本地 MCP 服务。提供状态快照、受限只读命令、逐次批准的写操作和审计日志。当前版本：0.4.0。
+通过 SSH 管理多台 Linux 服务器的本地 MCP 服务。提供状态快照、受限只读命令、**浏览器人工审批**的写操作和审计日志。当前版本：0.5.0。
+
+**0.5.0 的关键变化：批准不再是一个布尔参数。** 所有写操作（含 `sudo_exec` / `delete_path` / `fetch_url`）都会在用户浏览器里弹出一次性页面，显示命令原文、风险等级、逐条风险点与回滚建议；人在页面上点"允许"才执行。被提示注入的模型无法代替这次点击。
 
 源码和示例不绑定盘符、用户名称、凭据目录或 MCP 客户端。Windows 支持自动部署;Linux/macOS 可手工接入。私人服务器清单、密钥和历史文件不属于发布内容。
 
@@ -75,6 +77,7 @@ node scripts/verify-onboarding.js web1
 | `-BootstrapOnly` | 接入和验收，但不生成或修改客户端配置 |
 | `-ProfileFile <文件>` | 可选 DSH YAML 文件;不指定时生成通用 MCP JSON |
 | `-InventoryPath <文件>` | 私有清单路径;默认 `DSH_VPS_INVENTORY` 或项目内 `servers.json` |
+| `-FullSudo` | 服务端给 ops-us **完整 sudo**（root）。会取消服务器侧所有边界，见「sudo 的两种模式」 |
 
 新安装默认凭据目录为用户目录下的 `.ssh/vps-ops-mcp`。选择顺序为 `-CredDir`、环境变量 `VPS_OPS_CRED_DIR`、已有清单条目的密钥位置、用户目录默认值。已有条目引用的密钥丢失时中止，不悄悄生成替代密钥；只有显式指定目录或密钥名时才切换。Windows ACL 仅保留当前用户、SYSTEM 和 Administrators，清除其他显式和继承授权。自动部署使用无口令专用密钥；加密密钥可由 MCP 运行时通过清单口令加载，部署脚本会明确拒绝并避免等待输入。
 
@@ -156,11 +159,67 @@ cp servers.example.json servers.json
 | `status_snapshot` | 采集 identity/resources/docker/network/security/logs；支持分组及最多 5 台服务器 |
 | `read_only_command` | 白名单和 shell 结构校验后的只读命令，禁止用户提供 sudo |
 | `read_file` | 读取确定的绝对路径，默认最多 256 KiB，拒绝凭据形态及引号、转义、展开 |
-| `ssh_exec_approved` | 支持的运维命令，要求明确批准并通过硬性禁止检查 |
-| `read_audit_log` | 查询命令尝试、结果或最近记录的汇总 |
-| `policy_info` | 查看策略、指纹固定状态和限制 |
+| `review_command` | **只审查不执行**：返回风险等级、逐条风险点、回滚建议、会不会被硬拦 |
+| `ssh_exec_approved` | 普通写操作（非 root），仍要求 `approvedByUser` + **浏览器点击** |
+| `sudo_exec` | 以 root 执行；每次必弹审批页，致命级要求手输"确认执行" |
+| `delete_path` | 结构化删除（绝对路径 + `recursive`），删除类强制置顶审查 |
+| `fetch_url` | 只下载到指定路径、**绝不执行**，回传 sha256 便于核对 |
+| `approval_resume` | 某次调用返回 `pending` 时继续等待同一请求的结果 |
+| `read_audit_log` | 查询命令尝试、审批来源、风险等级与结果，或最近记录的汇总 |
+| `policy_info` | 查看策略、审批模式、指纹固定状态和限制 |
 
 状态快照的 Docker 和日志诊断可以调用服务端只读包装程序；每台同时最多 4 条 SSH 命令。其他只读命令受账户本身权限限制。
+
+## 人工审批闸门（0.5.0）
+
+**为什么不是布尔参数。** 早期版本只要求调用方传 `approvedByUser: true`。那是**模型自己填的字段**：被提示注入的 agent 写个 `true` 就执行了，审计里也分不出"用户真的同意过"和"它自己声明的"。
+
+DSH 的 MCP 客户端是 `new Client(..., { capabilities: {} })`，不声明 elicitation，也没有注册客户端请求处理器，因此服务端无法通过 MCP 协议弹窗。审批只能做成带外闸门：
+
+| 环节 | 实现 |
+|---|---|
+| 发起 | 工具调用在 MCP 进程内建一条请求记录，256 位随机令牌，起一个只监听 `127.0.0.1` 的随机端口 |
+| 呈现 | 默认浏览器打开一次性页面：命令原文、目标、登录账户、**风险等级 + 逐条风险点 + 回滚建议** |
+| 判定 | 只有页面 POST `decision=allow` 才执行；`deny`、关窗、超时一律按拒绝 |
+| 绑定 | 令牌指向那条具体命令原文；提交后令牌立即作废（一次性） |
+| 时序 | 请求有效期 5 分钟；单次工具调用最多阻塞 45 秒，超时返回 `pending`，用 `approval_resume` 继续等 |
+| 并发 | 同一时刻只允许**一个**待审批请求，避免用弹窗把用户训练成无脑点"允许" |
+| 失败关闭 | 通道起不来、端口被占、令牌不对、非法令牌累计 10 次 → 全部按拒绝结算 |
+
+确认强度随风险等级变化（**服务端二次校验**，不依赖浏览器 `required`）：
+
+| 等级 | 用户要做什么 |
+|---|---|
+| 低 / 中 | 点一次"允许执行" |
+| 高 | 额外勾选"我已阅读风险与回滚建议" |
+| 致命 | 额外手输 `确认执行` |
+
+环境变量：`DSH_VPS_APPROVAL_MODE`（`prompt` 默认 / `deny` 一律拒绝 / `allow` 仅测试）、`DSH_VPS_APPROVAL_TTL_MS`（默认 300000）、`DSH_VPS_APPROVAL_WAIT_MS`（默认 45000，上限 55000）。MCP 客户端的工具超时必须大于等待时长。
+
+**它挡住什么、挡不住什么。** 挡住了"模型自己声明批准就执行"，也挡住了"模型悄悄换一条命令执行"。**没挡住**一个能在本机任意执行命令的进程去 POST 那个本地端口；令牌不进模型上下文、一次性、5 分钟过期、非法尝试 10 次即关闭，但这抬高门槛而非密码学强制。真正的硬边界是服务端 sudo 规则（见下）。
+
+## 风险审查引擎（0.5.0）
+
+`src/risk.js` 对命令做**可解释的静态判定**，产出等级、类别、逐条风险点与回滚建议；它不决定能否执行，只决定用户被怎样提醒。六类扫描：删除、下载、提权、服务与系统、不可静态评估（解释器/`eval`/`xargs`）、凭据。
+
+两处刻意设计：**删除与下载是强制审查类别**，即使等级只有"中"也会在审批页置顶标红；扫描**跑两遍**（原文 + 去引号形态），否则 `bash -c "rm -rf /opt"` 里的 `rm` 会因前面是引号而漏判。
+
+## sudo 的两种模式
+
+| 模式 | sudoers | 谁还能兜底 |
+|---|---|---|
+| `readonly`（默认） | 只有 root 所有的 `mcp-readonly` 包装程序 | 服务端仍是硬边界：`systemctl start`、`rm -rf /root`、`apt install` 一律被拒 |
+| `--full-sudo` | `ops-us ALL=(ALL) NOPASSWD: ALL` | **没有服务端边界了**。能不能做某事只取决于审批页有没有人点"允许" |
+
+```bash
+sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment'                # 只读（默认）
+sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment' --full-sudo    # 完整 sudo
+# 收回：用 --readonly 重跑同一份脚本
+```
+
+两种模式下 `sudo_exec` 都会硬拦：磁盘/分区级破坏（`mkfs`/`wipefs`/`fdisk`/`parted`）、裸写块设备（`dd of=/dev/*`、`> /dev/sda`）、删根（`rm -rf /`、`--no-preserve-root`、fork bomb）、系统授权根文件（`/etc/passwd`、`/etc/sudoers`、`/etc/shadow`、`authorized_keys`）。
+
+> 与批准通道的差别是**刻意**的：`ssh_exec_approved` 仍不接受解释器、账户变更、防火墙变更；`sudo_exec` 只拦上面四类，其余交给"每次人工点击 + 致命级手输短语"。选了完整 sudo，就是把判断权交回给人，而不是假装系统还拦得住。
 
 ## 安全边界
 
@@ -174,7 +233,7 @@ sudo 只放行 root 所有的 `/usr/local/sbin/mcp-readonly`。该程序逐 argv
 
 权限自检使用 `sudo -n -l -- <command>` **查询授权**，不会通过实际停止 Docker、创建账户或清空日志来探测权限。既有系统额外的 sudo 配置仍需管理员核对；脚本的拒绝查询覆盖常见提权能力，不能代替对整台主机的安全审计。
 
-`approvedByUser` 是调用方对明确批准的声明，不是独立的身份认证或密码验证。MCP 客户端应向用户展示完整命令、影响和回滚方式后再提交批准。服务器受限账户和 sudo 规则是另一层限制，客户端字符串检查不构成完整操作系统沙箱，也不解析远端符号链接。
+`approvedByUser` 只是调用方"我已经把这事跟用户说过"的声明，**真正生效的是浏览器里那次点击**（见「人工审批闸门」）。服务器受限账户和 sudo 规则是另一层限制，客户端字符串检查不构成完整操作系统沙箱，也不解析远端符号链接。
 
 只读输出可能包含日志、Docker 配置或应用主动打印的敏感值；凭据路径拦截不是通用内容脱敏。请按实际用途选择可见内容。
 
@@ -182,11 +241,11 @@ SSH 的 stdout 和 stderr **各自**按 `maxOutputBytes` 限制，支持跨 chun
 
 ## 审计与验证
 
-默认审计文件为 `audit/approved-writes.jsonl`，支持用环境变量覆盖。记录命令、目标、原因、哈希、结果及输出字节数，不记录 stdout/stderr 内容。批准执行前必须先写入 `authorized` 记录，失败时不发送命令；执行后追加结果。命令文本超过 2000 字符会截断，完整 SHA-256 保留。只读任意命令及被拒绝尝试也会留痕；内置状态快照不逐条记录审计。请按需管理日志轮转与保留时间。
+默认审计文件为 `audit/approved-writes.jsonl`，支持用环境变量覆盖。记录命令、目标、原因、哈希、**工具名、是否 root、风险等级与类别、审批来源与等待时长**、结果及输出字节数，不记录 stdout/stderr 内容。批准执行前必须先写入 `authorized` 记录，失败时不发送命令；执行后追加结果。命令文本超过 2000 字符会截断，完整 SHA-256 保留。只读任意命令及被拒绝尝试也会留痕；内置状态快照不逐条记录审计。请按需管理日志轮转与保留时间。
 
 ```powershell
-pnpm test       # 临时密钥、本地 SSH 服务、隔离的 PowerShell 部署及 Bash 包装程序测试
-pnpm smoke      # stdio MCP 握手、9 个工具、拒绝策略和审计；只连接本机测试地址
+pnpm test       # 128 个测试:临时密钥、本地 SSH 服务、审批闸门真发 HTTP、隔离的 PowerShell 部署及 Bash 包装程序
+pnpm smoke      # stdio MCP 握手、14 个工具、拒绝策略和审计；只连接本机测试地址
 pnpm audit --prod
 ```
 

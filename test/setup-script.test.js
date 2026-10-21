@@ -68,10 +68,26 @@ test('不再授予 systemctl 任何 sudo 权限', () => {
   assert.match(raw, /systemctl.*不.*授予|刻意.*不.*sudo/s, '应有注释说明为何不授予 systemctl');
 });
 
-test('sudoers 只授权 root 所有的参数校验包装程序', () => {
-  const sudoers = raw.match(/cat > "\$sudoers_tmp" <<EOF([\s\S]*?)\nEOF/)[1];
-  assert.match(sudoers, /NOPASSWD: \${WRAPPER} \*/);
-  assert.ok(!/DOCKER_BIN|JOURNALCTL_BIN|DMESG_BIN|SS_BIN/.test(sudoers));
+test('sudoers 默认只授权 root 所有的参数校验包装程序', () => {
+  const blocks = [...raw.matchAll(/cat > "\$sudoers_tmp" <<EOF([\s\S]*?)\nEOF/g)].map((m) => m[1]);
+  assert.equal(blocks.length, 2, '应有两块 sudoers 模板:默认只读 + --full-sudo');
+
+  const readonly = blocks.find((b) => b.includes('${WRAPPER}'));
+  const full = blocks.find((b) => b.includes('NOPASSWD: ALL'));
+  assert.ok(readonly, '默认模板应授权包装程序 ${WRAPPER}');
+  assert.ok(full, '--full-sudo 模板应给出 NOPASSWD: ALL');
+
+  assert.match(readonly, /NOPASSWD: \${WRAPPER} \*/);
+  assert.ok(!/DOCKER_BIN|JOURNALCTL_BIN|DMESG_BIN|SS_BIN/.test(readonly));
+  assert.ok(!/NOPASSWD: ALL/.test(readonly), '默认模板绝不能给出完整 sudo');
+
+  // 完整 sudo 必须只在 --full-sudo 分支内出现,且该分支默认不生效
+  const fullStart = raw.indexOf('if [[ "$MODE" == "full" ]]; then');
+  assert.ok(fullStart > 0, '应有 --full-sudo 分支');
+  const fullBranch = raw.slice(fullStart, raw.indexOf('\nelse\n', fullStart));
+  assert.match(fullBranch, /NOPASSWD: ALL/, '--full-sudo 分支应写入完整 sudo');
+  assert.match(raw, /MODE="readonly"/, '默认模式必须是 readonly');
+
   assert.match(raw, /chown root:root "\$wrapper_tmp"/);
   assert.match(raw, /visudo -cf "\$sudoers_tmp"/);
 });

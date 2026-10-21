@@ -48,6 +48,10 @@ param(
   [string]$ViaExistingUser,
   # 该账户本身为 root 时可跳过 sudo
   [switch]$NoSudo,
+  # 服务器侧给 ops-us **完整 sudo**(root),而不是默认的"只读包装程序"。
+  # ⚠ 这会取消服务器侧的所有边界:能不能做某事只取决于 MCP 侧审批页面有没有人点"允许"。
+  # 需要 AI 做部署/重启服务/清理 /root 时才用;用完重跑一次不带本开关即可收回。
+  [switch]$FullSudo,
   [switch]$UpdateServer,
   [string]$ProfileFile,
   [string]$InventoryPath
@@ -322,7 +326,8 @@ if ($probeUser.ExitCode -ne 0 -or $UpdateServer) {
 
   # 落一份到文件:终端复制长 base64 容易漏字符,从文件整段复制更稳
   $bootstrapPath = Join-Path $CredDir 'bootstrap.txt'
-  & node (Join-Path $ProjectDir 'scripts\build-bootstrap.js') $PubPath $bootstrapPath
+  $fullSudoArg = if ($FullSudo) { @('--full-sudo') } else { @() }
+  & node (Join-Path $ProjectDir 'scripts\build-bootstrap.js') $PubPath $bootstrapPath @fullSudoArg
   if ($LASTEXITCODE -ne 0) { Die '生成引导命令失败' }
   $bootstrapLines = Get-Content $bootstrapPath
 
@@ -338,7 +343,7 @@ if ($probeUser.ExitCode -ne 0 -or $UpdateServer) {
 
     $mode = if ($NoSudo) { @() } else { @('--sudo') }
     $remotePath = Join-Path $CredDir 'bootstrap-via.txt'
-    & node (Join-Path $ProjectDir 'scripts\build-bootstrap.js') $PubPath $remotePath @mode
+    & node (Join-Path $ProjectDir 'scripts\build-bootstrap.js') $PubPath $remotePath @mode @fullSudoArg
     if ($LASTEXITCODE -ne 0) { Die '生成自动初始化命令失败' }
     Lock-Acl $remotePath -StripEveryone
     $remote = Get-Content $remotePath -Raw

@@ -15,6 +15,8 @@
       DSH_VPS_INVENTORY: '${INVENTORY_FILE}'
       DSH_VPS_HOST_FINGERPRINTS: ''
       DSH_VPS_ALLOW_TOFU: '0'
+      # 审批模式不要写死:不设 = prompt(浏览器人工审批)。只有自动化测试才用 allow。
+    # 必须大于审批等待时长(默认 45 秒),否则人工点"允许"的过程中会被客户端掐断。
     toolCallTimeoutMs: 620000
     failOnStartupError: false
     reconnect:

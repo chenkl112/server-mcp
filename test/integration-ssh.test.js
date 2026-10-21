@@ -351,7 +351,13 @@ test('MCP 层:read_only_command 与 status_snapshot 走真实 SSH 返回结构�
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [serverPath],
-    env: { ...process.env, DSH_VPS_INVENTORY: invPath, DSH_VPS_AUDIT_LOG: join(dir, 'audit.jsonl') },
+    env: {
+      ...process.env,
+      DSH_VPS_INVENTORY: invPath,
+      DSH_VPS_AUDIT_LOG: join(dir, 'audit.jsonl'),
+      // 端到端测试无人值守:跳过浏览器人工审批(生产默认是 prompt)
+      DSH_VPS_APPROVAL_MODE: 'allow',
+    },
     stderr: 'ignore',
   });
   const client = new Client({ name: 'integration', version: '1.0.0' }, { capabilities: {} });

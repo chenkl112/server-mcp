@@ -31,19 +31,71 @@ function sha256(text) {
 /**
  * 记录一次写操作。返回写入的条目;失败不抛错(审计失败不该让运维动作本身失败),
  * 但会把失败原因一并放进文件与返回值,便于事后发现。
+ *
+ * 新增字段都是为了回答"这次到底谁批准的、风险告知到了没有":
+ *   tool            哪个工具发起的(sudo_exec / delete_path / fetch_url / ssh_exec_approved)
+ *   sudo            是否以 root 执行
+ *   displayCommand  真正下发的完整命令(含 sudo 包装),与 command(原文)分开存
+ *   risk            风险审查结论(等级/类别/风险点标题),**不存全文**以免日志膨胀
+ *   approval        审批记录(来源、批准时间、等待时长)
  */
-export function recordApprovedWrite({ server, host, user, command, reason, result, error, outcome }) {
+export function recordApprovedWrite({
+  tool,
+  server,
+  host,
+  user,
+  command,
+  displayCommand,
+  reason,
+  sudo,
+  risk,
+  approval,
+  result,
+  error,
+  outcome,
+}) {
   const cmd = String(command ?? '');
   const entry = {
     ts: new Date().toISOString(),
     kind: 'approved-write',
+    tool: tool ?? null,
     server,
     host,
     loginUser: user,
+    sudo: sudo === true,
     command: cmd.length > COMMAND_CAP ? `${cmd.slice(0, COMMAND_CAP)}…[truncated]` : cmd,
     commandSha256: sha256(cmd),
     commandBytes: Buffer.byteLength(cmd),
+    ...(displayCommand && displayCommand !== cmd
+      ? {
+          displayCommand:
+            displayCommand.length > COMMAND_CAP
+              ? `${displayCommand.slice(0, COMMAND_CAP)}…[truncated]`
+              : displayCommand,
+        }
+      : {}),
     reason,
+    ...(risk
+      ? {
+          risk: {
+            level: risk.level,
+            categories: risk.categories,
+            findings: risk.findings.slice(0, 12).map((f) => `${f.severity}:${f.title}`),
+            requiresAck: risk.requiresAck === true,
+            requiresTypedPhrase: risk.requiresTypedPhrase ?? null,
+          },
+        }
+      : {}),
+    ...(approval
+      ? {
+          approval: {
+            id: approval.id ?? null,
+            source: approval.source ?? null,
+            decidedAt: approval.decidedAt ?? null,
+            waitedMs: approval.waitedMs ?? null,
+          },
+        }
+      : {}),
     outcome: outcome ?? (error ? 'error' : result?.timedOut ? 'timeout' : 'executed'),
     exitCode: result?.code ?? null,
     signal: result?.signal ?? null,

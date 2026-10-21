@@ -46,7 +46,7 @@ export function normalizePathForCheck(path) {
 }
 
 /** 受保护的系统目录(删除/改权限时不允许作用于这些目录本身) */
-const PROTECTED_TOP = /^\/(?:etc|var|usr|boot|root|home|bin|sbin|lib|lib32|lib64|opt|srv|sys|proc|dev)$/;
+export const PROTECTED_TOP = /^\/(?:etc|var|usr|boot|root|home|bin|sbin|lib|lib32|lib64|opt|srv|sys|proc|dev)$/;
 
 /**
  * 受保护路径前缀:命中即在**任何**写/删/移/改权限动作里拒绝,与动词无关。
@@ -784,11 +784,160 @@ export function allowlistForDisplay() {
     allowedPipeFilters: ALLOW_PIPE_FILTERS,
     denyPatternCount: DENY_PATTERNS.length,
     approvedDenyRules: APPROVED_DENY.map((d) => d.why),
+    sudoHardDenyRules: SUDO_HARD_DENY.map((d) => d.why),
     notes: [
       'awk / sed / perl / python 等能把程序文本当参数的工具不在白名单内:它们能在"只读"命令里执行代码或写文件。',
       '破坏性命令(rm/chmod/chown/dd/mv 等)的路径会先做词法归一化:/etc/、//etc、/./etc、/tmp/..、/etc/../etc 都能被识破。',
       '破坏性命令含变量、通配符或波浪号($HOME、${HOME}、~、*)时一律拒绝:静态检查无法确定实际目标,选择 fail-closed。',
       '只读通道不接受 &(含 2>&1):stdout 与 stderr 本就分开回传,合并只会丢信息。',
+      'sudo 通道以 root 执行,但系统授权根文件(/etc/passwd、/etc/sudoers、/etc/shadow)与不可逆破坏动作仍被硬拦:这类变更必须由你本人手工完成。',
     ],
   };
+}
+
+/* ================================================================== *
+ * 提权(sudo)通道
+ * ==================================================================
+ *
+ * 与 ssh_exec_approved 的关系:
+ *   * 两者共用"受保护路径 + 破坏性动作 + 凭据形态"这套判定;
+ *   * 区别在于 sudo 通道**不套用 APPROVED_DENY 与批准通道的命令名白名单** ——
+ *     用户既然选择了完整 sudo,把 systemctl / iptables / 解释器整类禁掉会让这条通道失去意义;
+ *   * 换来的是更强的确认动作:每次都必须人工点"允许",高危及致命还要勾选/输入短语。
+ *
+ * 这里只硬拦"一旦执行就没有回头路、且几乎不会是正常运维"的形态。
+ */
+export const SUDO_HARD_DENY = [
+  { re: /\b(?:mkfs(?:\.[a-z0-9]+)?|wipefs|fdisk|sfdisk|cfdisk|parted|gdisk)\b/, why: '磁盘/分区级破坏,数据不可恢复' },
+  { re: /\bdd\b[^\n]*\bof=\/dev\//, why: '裸写块设备,写错目标即整盘报废' },
+  { re: /:\s*\(\s*\)\s*\{[^}]*\}\s*;\s*:/, why: 'fork bomb(会拖死整台机器)' },
+  { re: /\brm\b[^\n]*--no-preserve-root/, why: '显式要求删除根目录' },
+  { re: /(?:^|\s)>\s*\/dev\/(?!null\b|stdout\b|stderr\b|tty\b|fd\/)/, why: '重定向写入块设备或字符设备' },
+  { re: /\b(?:apt|apt-get|dpkg)\b[^\n]*(?:--force-|--purge\s+essential|-o\s+DPkg::Force)/, why: '强制或破坏性包管理选项' },
+];
+
+/**
+ * sudo 通道的入口校验。返回 { ok } 或 { ok:false, why }。
+ *
+ * 结构层沿用了与只读/批准通道完全相同的 parseShell(approved:true):
+ * 命令替换、`~`、`#`、`(`、`)`、`{`、`}`、`<`、控制字符一律在这里就被拒 ——
+ * 因此"静态看不见目标"的那一大类手法根本进不到审批页。
+ *
+ * 与 checkApprovedCommand 的差异只在"命令名白名单"和"ABSOLUTE 禁止清单"的宽度;
+ * 受保护路径、破坏性动作、运行时展开、凭据形态四条规则完全共用同一份实现。
+ */
+export function checkSudoCommand(command) {
+  const cmd = String(command ?? '').trim();
+  if (!cmd) return { ok: false, why: '命令为空' };
+  if (cmd.length > 8192) return { ok: false, why: '命令过长(上限 8192 字符)' };
+
+  const shell = parseShell(cmd, { approved: true });
+  if (!shell.ok) return shell;
+
+  const normalized = shell.stages.map((words) => words.join(' ')).join('; ');
+
+  for (const d of SUDO_HARD_DENY) {
+    if (d.re.test(normalized) || d.re.test(cmd)) return { ok: false, why: `即使批准也不允许:${d.why}` };
+  }
+
+  for (const words of shell.stages) {
+    const stageSafety = checkDestructiveSafety(words.join(' '));
+    if (!stageSafety.ok) return { ok: false, why: `即使批准也不允许:${stageSafety.why}` };
+  }
+
+  const safety = checkDestructiveSafety(normalized, cmd);
+  if (!safety.ok) return { ok: false, why: `即使批准也不允许:${safety.why}` };
+
+  for (const text of [normalized, cmd]) {
+    const sensitive = checkSensitivePaths(text);
+    if (!sensitive.ok) return { ok: false, why: `即使批准也不允许:${sensitive.why}` };
+  }
+
+  return { ok: true, normalized };
+}
+
+/**
+ * 删除工具的目标路径校验(结构化入口,不走 shell 字符串)。
+ *
+ * 与 checkFilePath 的区别:这里不是"读",所以 /root/.ssh 这种目录本身
+ * 也不允许整片删除;而删除自己建的 /root/old-app 属于正常运维。
+ */
+export function checkDeletePath(path) {
+  const raw = String(path ?? '').trim();
+  if (!raw) return { ok: false, why: '路径为空' };
+  if (!raw.startsWith('/')) return { ok: false, why: '必须是绝对路径' };
+  if (/[\s;|&`$<>"'\\()\x00-\x1f\x7f]/.test(raw)) {
+    return { ok: false, why: '路径包含非法字符(空白、引号、转义、重定向、命令替换等)' };
+  }
+  if (/[[\]{}*?~]/.test(raw)) {
+    return { ok: false, why: '路径含通配符或波浪号:展开后的真实目标不可知,请给出确定的字面路径' };
+  }
+
+  const norm = normalizePathForCheck(raw);
+  if (norm === '/') return { ok: false, why: '不允许删除根目录' };
+  if (PROTECTED_TOP.test(norm)) {
+    return { ok: false, why: `${norm} 是系统顶层目录,整片删除会直接毁掉系统,拒绝` };
+  }
+  if (isProtectedPath(norm)) {
+    return {
+      ok: false,
+      why: `${norm} 命中受保护路径(账户/凭据/系统配置/不可重建数据):删除它等于提权或永久丢数据,拒绝`,
+    };
+  }
+  return { ok: true, normalized: norm };
+}
+
+/** 允许的下载协议。ftp / file / data 一律拒绝。 */
+const DOWNLOAD_PROTOCOLS = new Set(['http:', 'https:']);
+
+/** 下载 URL 校验:只接受 http/https,拒绝任何能被 shell 解释的字符。 */
+export function checkDownloadUrl(url) {
+  const raw = String(url ?? '').trim();
+  if (!raw) return { ok: false, why: 'URL 为空' };
+  if (raw.length > 2048) return { ok: false, why: 'URL 过长(上限 2048 字符)' };
+  if (/[\s"'`;|&<>$(){}[\]\\*]/.test(raw)) {
+    return { ok: false, why: 'URL 含空白或 shell 元字符(命令替换、通配符、重定向等),拒绝' };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, why: '不是合法的 URL(需要带协议,例如 https://example.com/x.sh)' };
+  }
+
+  if (!DOWNLOAD_PROTOCOLS.has(parsed.protocol)) {
+    return { ok: false, why: `只允许 http/https,收到 ${parsed.protocol}` };
+  }
+  if (!parsed.hostname) return { ok: false, why: 'URL 缺少主机名' };
+  if (parsed.username || parsed.password) {
+    return { ok: false, why: 'URL 内嵌凭据(user:pass@),会把密码写进命令与审计日志,拒绝' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  const isIp = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  return {
+    ok: true,
+    url: parsed.toString(),
+    protocol: parsed.protocol,
+    host,
+    isIp,
+    insecure: parsed.protocol === 'http:',
+  };
+}
+
+/** 下载落盘路径校验:必须是确定的绝对路径,且不能是受保护路径。 */
+export function checkDownloadTarget(path) {
+  const raw = String(path ?? '').trim();
+  if (!raw) return { ok: false, why: '落盘路径为空' };
+  if (!raw.startsWith('/')) return { ok: false, why: '落盘路径必须是绝对路径' };
+  if (/[\s;|&`$<>"'\\()\x00-\x1f\x7f]/.test(raw)) return { ok: false, why: '落盘路径包含非法字符' };
+  if (/[[\]{}*?~]/.test(raw)) return { ok: false, why: '落盘路径含通配符或波浪号' };
+
+  const norm = normalizePathForCheck(raw);
+  if (norm === '/') return { ok: false, why: '不允许把内容写到根目录' };
+  if (isProtectedPath(norm)) {
+    return { ok: false, why: `${norm} 命中受保护路径,不允许由 AI 下载内容覆盖` };
+  }
+  return { ok: true, normalized: norm };
 }

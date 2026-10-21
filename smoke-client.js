@@ -31,7 +31,12 @@ const EXPECTED_TOOLS = [
   'status_snapshot',
   'read_only_command',
   'read_file',
+  'review_command',
   'ssh_exec_approved',
+  'sudo_exec',
+  'delete_path',
+  'fetch_url',
+  'approval_resume',
   'read_audit_log',
   'policy_info',
 ];
@@ -87,7 +92,13 @@ const serverPath = new URL('./src/index.js', import.meta.url).pathname.replace(/
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
-  env: { ...process.env, DSH_VPS_INVENTORY: inventoryPath, DSH_VPS_AUDIT_LOG: join(dir, 'audit', 'writes.jsonl') },
+  env: {
+    ...process.env,
+    DSH_VPS_INVENTORY: inventoryPath,
+    DSH_VPS_AUDIT_LOG: join(dir, 'audit', 'writes.jsonl'),
+    // 冒烟测试无人值守:跳过浏览器人工审批(生产默认是 prompt)
+    DSH_VPS_APPROVAL_MODE: 'allow',
+  },
   stderr: 'pipe',
 });
 transport.stderr?.on('data', (d) => process.stderr.write(`  [server] ${d}`));

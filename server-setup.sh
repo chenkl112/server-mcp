@@ -1,20 +1,45 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# 在目标服务器上执行一次:创建受限运维账户、专用 SSH 公钥、最小化 sudo 规则。
+# 在目标服务器上执行一次:创建受限运维账户、专用 SSH 公钥、sudo 规则。
 #
 # 用法(在服务器上以 root 运行):
-#   sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment'
+#   sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment'                  # 只读 sudo(默认,推荐)
+#   sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment' --full-sudo      # 完整 sudo(全部 root 权限)
 #
-# 安全设计:
+# 两种模式的区别:
+#
+#   readonly(默认)
+#     sudo 只授权给 root 所有的只读包装程序 mcp-readonly,逐 argv 校验后再执行固定二进制。
+#     这是**服务器侧**的硬边界:即使 MCP 的审批被绕过,agent 也拿不到能改系统的权限。
+#
+#   --full-sudo
+#     ops-us 拿到 `NOPASSWD: ALL`,即整台机器的 root。
+#     此时**没有任何服务器侧边界**:能不能做某事,只取决于 MCP 侧的审批页面有没有人点"允许"。
+#     只有在你确实需要 AI 做部署、重启服务、清理 /root 之类的活时才用;用完请重跑 --readonly。
+#
+# 其他安全设计(两种模式都生效):
 #   * 专用账户 ops-us,不加入 docker 组(docker 组等价 root)
-#   * sudo 只授予"只读子命令",用 sudoers 参数约束,杜绝 systemctl start/edit 之类提权
-#   * docker 通过 sudoers 白名单放行,但只允许 ps/images/stats/logs 等只读子命令
 #   * 已有 AllowUsers 必须包含 ops-us;未配置时不改变管理员登录策略
 #   * 不安装任何常驻服务、不开放任何新端口
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
-PUBKEY="${1:-}"
+PUBKEY=""
+MODE="readonly"
+for arg in "$@"; do
+  case "$arg" in
+    --full-sudo) MODE="full" ;;
+    --readonly)  MODE="readonly" ;;
+    *)
+      if [[ -z "$PUBKEY" ]]; then
+        PUBKEY="$arg"
+      else
+        echo "错误: 多余的参数 '$arg'" >&2; exit 1
+      fi
+      ;;
+  esac
+done
+
 OPS_USER="ops-us"
 SUDOERS_FILE="/etc/sudoers.d/90-${OPS_USER}"
 SSHD_DROPIN="/etc/ssh/sshd_config.d/60-ops-us-allowusers.conf"
@@ -22,7 +47,7 @@ WRAPPER="/usr/local/sbin/mcp-readonly"
 
 die() { echo "错误: $*" >&2; exit 1; }
 
-[[ -n "$PUBKEY" ]] || die "用法: sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment'"
+[[ -n "$PUBKEY" ]] || die "用法: sudo bash server-setup.sh 'ssh-ed25519 AAAA... comment' [--full-sudo]"
 [[ "$PUBKEY" != *$'\n'* && "$PUBKEY" != *$'\r'* && "$PUBKEY" =~ ^(ssh-|ecdsa-|sk-) ]] || die "公钥格式不对(应以 ssh-ed25519 / ssh-rsa / ecdsa- 开头)"
 [[ "$(id -u)" -eq 0 ]] || die "请用 root 运行(或 sudo)"
 key_tmp="$(mktemp)"
@@ -77,7 +102,7 @@ printf 'no-agent-forwarding,no-X11-forwarding,no-port-forwarding %s\n' "$PUBKEY"
 chown root:root "/home/${OPS_USER}/.ssh/authorized_keys"
 chmod 644 "/home/${OPS_USER}/.ssh/authorized_keys"
 
-echo "==> 3/7 安装 root 所有的只读包装程序与最小 sudo 规则"
+echo "==> 3/7 安装 root 所有的只读包装程序与 sudo 规则(模式:${MODE})"
 # sudo 只授权包装程序,不授权原始 docker/journalctl/dmesg/ss。
 # 逐 argv 验证后,在干净环境中执行固定绝对路径的二进制。
 [[ ! -L /usr/local/sbin && ! -L "$WRAPPER" ]] || die "包装程序路径不得为符号链接"
@@ -160,11 +185,24 @@ chown root:root "$wrapper_tmp"
 chmod 755 "$wrapper_tmp"
 mv -f "$wrapper_tmp" "$WRAPPER"
 sudoers_tmp="$(mktemp)"
-cat > "$sudoers_tmp" <<EOF
+if [[ "$MODE" == "full" ]]; then
+  # 完整提权。刻意单独成块:这一段一旦生效,服务器侧就不再有任何边界。
+  cat > "$sudoers_tmp" <<EOF
+# 由 server-setup.sh --full-sudo 生成
+#
+# ⚠ 完整提权:${OPS_USER} 可以以 root 执行任意命令。
+# 服务器侧已经没有边界了 —— 剩下的唯一约束是 MCP 侧的审批页面(每次执行都要人点"允许")。
+# 恢复只读模式: sudo bash server-setup.sh '<公钥>' --readonly
+Defaults:${OPS_USER} env_reset
+${OPS_USER} ALL=(ALL) NOPASSWD: ALL
+EOF
+else
+  cat > "$sudoers_tmp" <<EOF
 # root-owned argv validator; never grant the underlying binaries.
 Defaults:${OPS_USER} env_reset
 ${OPS_USER} ALL=(root) NOPASSWD: ${WRAPPER} *
 EOF
+fi
 chmod 440 "$sudoers_tmp"
 visudo -cf "$sudoers_tmp" >/dev/null || { rm -f "$sudoers_tmp"; die "sudoers 语法校验失败,未安装"; }
 install -o root -g root -m 440 "$sudoers_tmp" "$SUDOERS_FILE"
@@ -222,7 +260,26 @@ expect_denied() {  # 仅查询 sudo 授权,绝不执行被测命令
   fi
 }
 expect_ok "sudo -n $WRAPPER docker ps -q" "读容器列表"
-expect_ok "sudo -n $WRAPPER journalctl -n 1 --no-pager" "读容器列表"
+expect_ok "sudo -n $WRAPPER journalctl -n 1 --no-pager" "读系统日志"
+
+if [[ "$MODE" == "full" ]]; then
+  # 完整 sudo 模式下,"能否提权"是设计意图,所以自检变成"确认提权确实生效",
+  # 同时把代价明确印出来 —— 不让"全绿"给人虚假的安全感。
+  expect_ok "sudo -n id -u | grep -qx 0" "sudo 免密提权到 root"
+  expect_ok "sudo -n head -n 1 /etc/shadow" "读 shadow(只读模式里这是被拒的)"
+
+  echo "    ---- 自检小结:通过 ${pass_count} 项,失败 ${fail_count} 项 ----"
+  cat <<WARN
+
+    ⚠⚠⚠ 完整 sudo 模式已生效:${OPS_USER} 现在可以以 root 执行任意命令。
+        服务器侧已经没有边界:服务启停、rm -rf、apt、iptables、读 shadow 全部可用。
+        唯一剩下的约束是 MCP 侧的审批页面 —— 每次执行都必须有人在那里点"允许"。
+        请确认 DSH 侧审批模式是 prompt(不要设 DSH_VPS_APPROVAL_MODE=allow)。
+
+    用完想收回权限,把同一份脚本用 --readonly 重跑一次即可。
+
+WARN
+else
 expect_denied "docker run" "$DOCKER_BIN" run --rm alpine true
 expect_denied "docker exec" "$DOCKER_BIN" exec x true
 expect_denied "docker volume rm" "$DOCKER_BIN" volume rm x
@@ -236,6 +293,7 @@ expect_denied "dmesg -C" "$DMESG_BIN" -C
 expect_denied "ss -K" "$SS_BIN" -K
 
 echo "    ---- 自检小结:通过 ${pass_count} 项,失败 ${fail_count} 项 ----"
+fi
 if [[ "$fail_count" -gt 0 ]]; then
   die "自检未全部通过,请勿继续使用这个账户。"
 fi

@@ -1,8 +1,8 @@
 {
   "name": "dsh-vps-ops-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
-  "description": "自建 VPS 运维 MCP 服务器:主机密钥固定校验 + 密钥认证 + 命令白名单 + 分级写操作",
+  "description": "自建 VPS 运维 MCP 服务器:主机密钥固定校验 + 密钥认证 + 命令白名单 + 浏览器人工审批闸门 + 分级写操作",
   "type": "module",
   "main": "src/index.js",
   "engines": {
