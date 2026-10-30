@@ -19,7 +19,6 @@
  */
 import assert from 'node:assert/strict';
 import test, { after, before } from 'node:test';
-import { generateKeyPairSync, createHash } from 'node:crypto';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -36,7 +35,7 @@ const OPS_PUB = PUB_PATH;
 
 /** 测试 sshd 的命令实现:确定、无副作用。 */
 const STUB_COMMANDS = new Map([
-  ['id', "uid=1001(ops-us) gid=1001(ops-us) groups=1001(ops-us)\n"],
+  ['id', 'uid=1001(ops-us) gid=1001(ops-us) groups=1001(ops-us)\n'],
   ['hostname', 'test-vps-1\n'],
   ['uptime', ' 12:00:00 up 10 days,  3:21,  1 user,  load average: 0.10, 0.20, 0.15\n'],
   ['uname -a', 'Linux test-vps-1 6.8.0-45-generic #45-Ubuntu SMP x86_64 GNU/Linux\n'],
@@ -58,16 +57,9 @@ const STUB_FILES = new Map([
 let server;
 let port;
 let hostFingerprint;
-let inventoryPath;
 let hostKeyDir;
 /** 记录服务端收到的命令,用于断言"客户端确实发出去了" */
 const received = [];
-
-function fingerprintOf(keyObject) {
-  const der = keyObject.export({ type: 'spki', format: 'der' });
-  // 与 src/hostkey.js 的算法保持一致:对 ssh2 提供的原始 key blob 求 sha256
-  return 'SHA256:' + createHash('sha256').update(der).digest('base64').replace(/=+$/, '');
-}
 
 before(async () => {
   // 生成临时主机密钥。注意:必须用 ssh-keygen 生成 OpenSSH 格式 ——

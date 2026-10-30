@@ -13,7 +13,6 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
 import { powershellEnv } from './helpers/powershell.js';
 
 const PROJECT = resolve(dirname(fileURLToPath(import.meta.url)), '..');

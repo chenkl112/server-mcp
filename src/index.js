@@ -341,7 +341,7 @@ function inventoryPath() {
 
 function currentInventory() {
   const path = inventoryPath();
-  let mtime = null;
+  let mtime;
   try {
     mtime = statSync(path).mtimeMs;
   } catch {

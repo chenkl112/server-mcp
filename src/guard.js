@@ -326,7 +326,7 @@ export const DENY_PATTERNS = [
   { re: /\/etc\/ssh\/|ssh_host_\w+_key/, why: '读取 SSH 主机密钥或服务端配置' },
   { re: /\/\.(?:aws|docker|kube|config\/rclone)\//, why: '读取云/容器凭据目录' },
   { re: /\.(?:pem|key|p12|pfx|jks|keystore)\b/, why: '读取私钥或证书文件' },
-  { re: /(?:^|\/)[^\/]*\.env(?:\.|$|\s)/i, why: '读取环境变量文件(常含密钥)' },
+  { re: /(?:^|\/)[^/]*\.env(?:\.|$|\s)/i, why: '读取环境变量文件(常含密钥)' },
   { re: /\/proc\/(?:self|thread-self|\d+)\/(?:environ|mem|maps|cmdline)/, why: '读取进程环境或内存' },
   { re: /\/proc\/kcore\b/, why: '读取内核内存' },
   { re: /^\s*printenv\b/i, why: '可能导出全部环境变量(含凭据)' },
@@ -381,7 +381,7 @@ export const DENY_PATTERNS = [
 export const ALLOW_PREFIXES = [
   // 身份与时间。date 收窄为纯展示形态:排除 -s/--set(改系统时钟)
   'id', 'whoami', 'hostname', 'uname', 'uptime',
-  /^date(\s+-u|\s+-R|\s+--rfc-3339=\S+|\s+\+[%a-zA-Z0-9:\/ _-]+)*\s*$/,
+  /^date(\s+-u|\s+-R|\s+--rfc-3339=\S+|\s+\+[%a-zA-Z0-9:/ _-]+)*\s*$/,
   // 资源(去掉 sar:它的 -o 会写二进制数据文件)
   'free', 'df', 'du', 'lsblk', 'lscpu', 'nproc', 'top', 'ps', 'vmstat', 'iostat', 'pidstat', 'tload',
   // 网络状态。ss 排除 -K(强制断开连接);ip 只允许穷举的只读形态
@@ -406,7 +406,7 @@ export const ALLOW_PREFIXES = [
   /^ip\s+(?:-\S+\s+)*(?:route|r|addr|a|link|l|neigh|n|rule|netns)\s+(?:show|list|ls|s|sh)\s*$/,
   // 包管理(只读)
   'dpkg -l', 'dpkg -s', 'dpkg -V', 'apt list', 'apt-cache', 'snap list',
-  /^sysctl(\s+-n|\s+--values|\s+-a|\s+[a-z0-9_.\/-]+)*\s*$/i,
+  /^sysctl(\s+-n|\s+--values|\s+-a|\s+[a-z0-9_./-]+)*\s*$/i,
   // Docker(只读)
   'docker ps', 'docker images', 'docker stats', 'docker logs', 'docker inspect', 'docker version',
   'docker system df', 'docker volume ls', 'docker network ls', 'docker info', 'docker top',
@@ -506,7 +506,7 @@ const CREDENTIAL_SHAPES = [
   /(?:\S*\/)?\.(?:my\.cnf|pgpass|netrc|npmrc|bash_history|mylogin\.cnf|git-credentials)\b/,
   /\.(?:pem|key|p12|pfx|jks|keystore)\b/,
   /\/\.(?:aws|docker|kube|config\/rclone)\//,
-  /(?:^|\/)[^\/]*\.env(?:\.|$|\s)/i,
+  /(?:^|\/)[^/]*\.env(?:\.|$|\s)/i,
   /\/proc\/(?:self|thread-self|\d+)\/(?:environ|mem|maps|cmdline)/,
   /\/proc\/kcore\b/,
   // SSH 私钥与授权列表:允许 id_rsa 与 idrsa 两种形态(后者来自 id[r]sa 这类折叠写法)

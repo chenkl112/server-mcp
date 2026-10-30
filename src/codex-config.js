@@ -40,7 +40,7 @@ const MANAGED_ENV = ['DSH_VPS_INVENTORY', 'DSH_VPS_ALLOW_TOFU'];
  */
 const DEFAULT_TOOLS_APPROVAL_MODE = 'approve';
 
-const HEADER = /^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/;
+const HEADER = /^\s*\[([^[\]]+)\]\s*(?:#.*)?$/;
 const KEY_LINE = /^\s*([A-Za-z0-9_"'.-]+)\s*=\s*(.+)$/;
 
 function detectEol(text) {

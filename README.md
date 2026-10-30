@@ -354,10 +354,13 @@ SSH 的 stdout 和 stderr **各自**按 `maxOutputBytes` 限制，支持跨 chun
 默认审计文件为 `audit/approved-writes.jsonl`，支持用环境变量覆盖。记录命令、目标、原因、哈希、**工具名、是否 root、风险等级与类别、审批来源与等待时长**、结果及输出字节数，不记录 stdout/stderr 内容。批准执行前必须先写入 `authorized` 记录，失败时不发送命令；执行后追加结果。命令文本超过 2000 字符会截断，完整 SHA-256 保留。只读任意命令及被拒绝尝试也会留痕；内置状态快照不逐条记录审计。请按需管理日志轮转与保留时间。
 
 ```powershell
-pnpm test       # 139 个测试:临时密钥、本地 SSH 服务、审批闸门真发 HTTP、Codex TOML 合并、隔离的 PowerShell 部署及 Bash 包装程序
+pnpm lint       # ESLint:静态检查 + 与本仓库既有写法的风格约束(单引号、分号、EOF 换行等)
+pnpm test       # 154 个测试:临时密钥、本地 SSH 服务、审批闸门真发 HTTP、Codex TOML 合并、隔离的 PowerShell 部署及 Bash 包装程序
 pnpm smoke      # stdio MCP 握手、14 个工具、拒绝策略和审计；只连接本机测试地址
 pnpm audit --prod
 ```
+
+`pnpm verify` 依次执行 lint、test、smoke，CI 用它作为唯一门禁；`release:export` 另外扫描发布物是否夹带私钥、账号密码或本机绝对路径。
 
 测试不读取正式私钥或用户的 live profile，不连接正式服务器。安全修复及验证范围见 [SECURITY-REVIEW.md](SECURITY-REVIEW.md)。GitHub Actions 在 Windows/Linux 与 Node.js 22/24 的矩阵中执行相同验证;Windows 自动部署行为仅在 Windows 上测试。
 

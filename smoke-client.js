@@ -11,7 +11,6 @@
  * 用临时清单指向一个不可达地址,因此不依赖任何真实服务器。
  * 运行:node smoke-client.js
  */
-import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
