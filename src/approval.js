@@ -97,11 +97,18 @@ function openInBrowser(url) {
   }
 }
 
-function delay(ms) {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    if (typeof t.unref === 'function') t.unref();
-  });
+/**
+ * 可取消的等待计时器。
+ *
+ * 这里刻意 **不** unref:调用方正 await 着这个结果,计时器必须撑住事件循环。
+ * 早先的实现 unref 了计时器,一旦没有别的句柄,Node 会认为进程没事可做,
+ * 于是在 Node 22 上直接退出,等待中的 promise 永远不 settle(测试里表现为
+ * "Promise resolution is still pending but the event loop has already resolved")。
+ * 取消则交给调用方在竞速结束后 clear,避免决定已到达还白等一整轮。
+ */
+function startTimer(ms, onFire) {
+  const timer = setTimeout(onFire, ms);
+  return { clear: () => clearTimeout(timer) };
 }
 
 function safeEqual(a, b) {
@@ -484,10 +491,21 @@ export function createApprovalGate(opts = {}) {
 
   /** 等到决定(或执行完成),最多 waitMs。 */
   async function awaitOutcome(record, waitMs) {
-    const raced = await Promise.race([
-      record.settled.then((v) => ({ settled: true, value: v })),
-      delay(Math.max(1, waitMs)).then(() => ({ settled: false })),
-    ]);
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = startTimer(Math.max(1, waitMs), () => resolve({ settled: false }));
+    });
+
+    let raced;
+    try {
+      raced = await Promise.race([
+        record.settled.then((v) => ({ settled: true, value: v })),
+        timeout,
+      ]);
+    } finally {
+      // 决定先到就不用再等到超时
+      if (timer) timer.clear();
+    }
 
     if (raced.settled) {
       const value = raced.value;
